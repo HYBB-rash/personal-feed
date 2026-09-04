@@ -1,0 +1,8 @@
+.direnv/
+node_modules/
+lib/
+result
+*.tsbuildinfo
+__pycache__/
+*.pyc
+.personal-feed-install-backups/

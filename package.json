@@ -1,0 +1,46 @@
+{
+  "name": "personal-feed",
+  "description": "A standalone, channel-neutral Personal Feed MCP service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "personal-feed": "./lib/cli.js"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:python": "python -m unittest discover -s python -p 'test_*.py'",
+    "check": "pnpm typecheck && pnpm test && pnpm test:python && pnpm build"
+  },
+  "files": [
+    "lib/**",
+    "python/x_browser_navigation_lock.py",
+    "python/x_personal_feed_observer.py",
+    "python/x_personal_feed_observer_cli.py"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.5",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.1",
+    "tsdown": "^0.14.2",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.15.0"
+}

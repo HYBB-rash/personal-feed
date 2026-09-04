@@ -1,0 +1,7 @@
+interface:
+  display_name: "Personal Feed"
+  short_description: "通过独立 MCP 请求 Feed 并处理反馈与收藏"
+  default_prompt: "使用 $personal-feed 通过已安装的 MCP 获取我的 Personal Feed，或处理当前 Feed 内容的反馈与收藏。"
+
+policy:
+  allow_implicit_invocation: true

@@ -32,3 +32,12 @@
 ## 遗留
 
 真实 X Feed 尚未跑通；本机 CDP 9222 不可达，新独立状态也未录入用户长期兴趣和已有认识。没有配置 DSH MCP 接入或改动 DSH 服务。
+
+## 修复后复验
+
+- 13:44：定向安装器测试 7 项通过；完整类型检查、58 项 TypeScript 测试、28 项 Python 测试和构建通过。构建仍存在原有 tsdown/rolldown `define` 选项警告，不影响本次产物启动。
+- 13:45：提交修复 294f7b8，以安装器从该精确提交重新构建并安装。systemd 正确识别 EnvironmentFiles，服务 active/running，NRestarts=0；systemd-analyze 不再报告 Personal Feed 路径错误（另有无关既存 timer 文件名警告）。
+- 13:45：真实服务 healthz/readyz 均为 200，MCP 客户端发现全部五个工具，list_saved 正常返回空集合。使用用户本轮原文调用 observe_context，DeepSeek 返回 ignored（约 1.6 秒）；request 返回 incomplete/personal_context（约 0.8 秒）。未伪造用户偏好以绕过语境条件，也未将该结果视为业务空集。
+- MCP 地址为 http://127.0.0.1:43180/mcp；独立配置位于 ~/.config/personal-feed/service.env（0600），状态位于 ~/.local/state/personal-feed。使用 deepseek-v4-flash；密钥不记录到日志或 Git。
+- 本次创建服务前的备份：~/.config/personal-feed/backups/service-2026-09-05T05-42-23-117Z-180cc7c2-8177-46fa-9c3e-42c8cb663b33。通过 service rollback --apply 指定该目录可撤销本次安装，状态数据按安装器合同保留。
+- 用户尚待确认已登录 X 浏览器所在主机；127.0.0.1:9222 不可达，真实 Feed 推荐未完成。修复仅本地提交和安装，未推送或合并。

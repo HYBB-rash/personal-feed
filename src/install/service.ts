@@ -130,7 +130,7 @@ function serviceEnvironment(options: ServiceInstallOptions, stateDir: string, st
 
 function serviceUnit(template: string, envPath: string, storePath: string, stateDir: string): string {
   const values = {
-    '@CONFIG_ENV@': unitValue(envPath),
+    '@CONFIG_ENV@': environmentFilePath(envPath),
     '@STORE_PATH@': storePath,
     '@STATE_DIR@': unitValue(stateDir),
   } as const
@@ -206,6 +206,12 @@ function validateSecrets(options: ServiceInstallOptions): void {
 function environmentValue(value: string): string {
   if (/[\0\r\n]/.test(value)) throw new Error('systemd environment values must be single-line')
   return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
+}
+
+function environmentFilePath(value: string): string {
+  if (/[\0\r\n]/.test(value)) throw new Error('systemd unit values must be single-line')
+  // EnvironmentFile parses one whole path; surrounding quotes become literal path characters.
+  return value.replaceAll('%', '%%')
 }
 
 function unitValue(value: string): string {

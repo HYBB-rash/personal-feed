@@ -1,6 +1,6 @@
 import { chmod, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { installUserService, rollbackUserService } from '../../src/install/service.ts'
 
@@ -46,7 +46,9 @@ describe('user service installer', () => {
     const unit = await readFile(join(fixture.configHome, 'systemd/user/personal-feed.service'), 'utf8')
     expect(unit).toContain('# template-source')
     expect(unit).toContain('/nix/store/personal-feed/bin/personal-feed serve')
-    expect(unit).toContain('EnvironmentFile="')
+    const environmentFile = unit.split('\n').find(line => line.startsWith('EnvironmentFile='))!.slice('EnvironmentFile='.length)
+    expect(isAbsolute(environmentFile)).toBe(true)
+    expect(environmentFile).toBe(envPath)
     expect(unit).toContain('ReadWritePaths="')
     expect(fixture.run).toHaveBeenCalledWith('systemctl', ['--user', 'daemon-reload'])
     expect(fixture.run).toHaveBeenCalledWith('systemctl', ['--user', 'enable', '--now', 'personal-feed.service'])

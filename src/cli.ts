@@ -1,17 +1,14 @@
 #!/usr/bin/env node
 import { fileURLToPath } from 'node:url'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { installDshIntegration, rollbackDshIntegration, type DshInstallOptions, type InstallResult } from './install/dsh.ts'
-import { installUserService, rollbackUserService, type ServiceInstallOptions } from './install/service.ts'
+import { join } from 'node:path'
+import { installUserService, rollbackUserService, type ServiceInstallOptions, type InstallResult } from './install/service.ts'
 
 export interface CliDependencies {
   readonly environment: NodeJS.ProcessEnv
   readonly cwd: () => string
   readonly installService: (options: ServiceInstallOptions) => Promise<InstallResult>
-  readonly installDsh: (options: DshInstallOptions) => Promise<InstallResult>
   readonly rollbackService: typeof rollbackUserService
-  readonly rollbackDsh: typeof rollbackDshIntegration
   readonly serve: () => Promise<void>
   readonly write: (line: string) => void
 }
@@ -26,28 +23,22 @@ export async function runPersonalFeedCli(
     await dependencies.serve()
     return 0
   }
-  if ((scope === 'service' || scope === 'dsh') && action === 'install') {
+  if (scope === 'service' && action === 'install') {
     const mode = installMode(flags)
-    const result = scope === 'service'
-      ? await dependencies.installService(serviceOptions(dependencies, mode))
-      : await dependencies.installDsh(dshOptions(dependencies, mode))
+    const result = await dependencies.installService(serviceOptions(dependencies, mode))
     report(result, dependencies.write)
     return 0
   }
-  if ((scope === 'service' || scope === 'dsh') && action === 'rollback') {
+  if (scope === 'service' && action === 'rollback') {
     if (flags.length !== 2 || flags[0] !== '--apply' || flags[1] === undefined) {
       throw new Error('rollback requires --apply followed by the exact backup directory')
     }
-    if (scope === 'service') {
-      const homes = resolveHomes(dependencies.environment)
-      await dependencies.rollbackService({ configHome: homes.configHome, backupDir: flags[1] })
-    } else {
-      await dependencies.rollbackDsh({ dshHome: resolveDshHome(dependencies.environment), backupDir: flags[1] })
-    }
-    dependencies.write('Rollback completed. Restarting or switching DSH remains a separate operator action.')
+    const homes = resolveHomes(dependencies.environment)
+    await dependencies.rollbackService({ configHome: homes.configHome, backupDir: flags[1] })
+    dependencies.write('Rollback completed.')
     return 0
   }
-  throw new Error('usage: personal-feed serve | service install --check|--apply | dsh install --check|--apply | <service|dsh> rollback --apply BACKUP_DIR')
+  throw new Error('usage: personal-feed serve | service install --check|--apply | service rollback --apply BACKUP_DIR')
 }
 
 function installMode(flags: readonly string[]): 'check' | 'apply' {
@@ -75,46 +66,12 @@ function serviceOptions(dependencies: CliDependencies, mode: 'check' | 'apply'):
   }
 }
 
-function dshOptions(dependencies: CliDependencies, mode: 'check' | 'apply'): DshInstallOptions {
-  const env = dependencies.environment
-  const configured = required(env, 'PERSONAL_FEED_MCP_URL')
-  const serviceUrl = serviceOriginFromMcpUrl(configured)
-  const here = dirname(fileURLToPath(import.meta.url))
-  return {
-    mode,
-    dshHome: resolveDshHome(env),
-    serviceUrl,
-    mcpToken: required(env, 'PERSONAL_FEED_MCP_TOKEN'),
-    skillSourceDir: join(here, '..', 'skills', 'personal-feed'),
-  }
-}
-
-function serviceOriginFromMcpUrl(input: string): string {
-  if (/[\r\n]/.test(input)) throw new Error('PERSONAL_FEED_MCP_URL must be the loopback MCP endpoint')
-  let parsed: URL
-  try { parsed = new URL(input) } catch { throw new Error('PERSONAL_FEED_MCP_URL must be the loopback MCP endpoint') }
-  if (
-    parsed.protocol !== 'http:'
-    || parsed.hostname !== '127.0.0.1'
-    || parsed.username !== ''
-    || parsed.password !== ''
-    || parsed.pathname !== '/mcp'
-    || parsed.search !== ''
-    || parsed.hash !== ''
-  ) throw new Error('PERSONAL_FEED_MCP_URL must be the loopback MCP endpoint')
-  return parsed.origin
-}
-
 function resolveHomes(env: NodeJS.ProcessEnv): { configHome: string; stateHome: string } {
   const home = env.HOME ?? homedir()
   return {
     configHome: env.XDG_CONFIG_HOME ?? join(home, '.config'),
     stateHome: env.XDG_STATE_HOME ?? join(home, '.local', 'state'),
   }
-}
-
-function resolveDshHome(env: NodeJS.ProcessEnv): string {
-  return env.DSH_HOME ?? join(env.HOME ?? homedir(), '.dsh')
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {
@@ -141,9 +98,7 @@ function defaultDependencies(): CliDependencies {
     environment: process.env,
     cwd: process.cwd,
     installService: installUserService,
-    installDsh: installDshIntegration,
     rollbackService: rollbackUserService,
-    rollbackDsh: rollbackDshIntegration,
     serve: async () => {
       const { serveFromEnvironment } = await import('./main.ts')
       await serveFromEnvironment()

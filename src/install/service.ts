@@ -2,7 +2,6 @@ import { chmod, lstat, mkdir, readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import type { InstallResult } from './dsh.ts'
 import { atomicWrite, backupName, createBackup, isNotFound, readOptional, restoreBackup } from './files.ts'
 
 const execFileAsync = promisify(execFile)
@@ -13,6 +12,13 @@ const STATE_MARKER_CONTENT = 'owned by personal-feed service installer v1\n'
 
 export interface CommandResult { readonly stdout: string }
 export type CommandRunner = (command: string, args: readonly string[]) => Promise<CommandResult>
+
+export interface InstallResult {
+  readonly changed: boolean
+  readonly actions: readonly string[]
+  readonly backupDir?: string
+  readonly rollbackCommand?: string
+}
 
 export interface ServiceInstallOptions {
   readonly mode: 'check' | 'apply'

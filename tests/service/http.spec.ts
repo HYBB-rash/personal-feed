@@ -34,16 +34,13 @@ describe('Personal Feed HTTP service', () => {
     expect(await ready.json()).toEqual({ status: 'ready' })
 
     await writeFile(fixture.observerCliPath, '')
-    const neverCalled = vi.fn()
     running = await restart(running, {
       application: fakeApplication(),
       config: { ...serviceConfig(fixture), model: { ...serviceConfig(fixture).model, apiKey: '' } },
-      networkProbe: neverCalled,
     })
     const notReady = await fetch(`${running.origin}/readyz`)
     expect(notReady.status).toBe(503)
     expect(await notReady.json()).toEqual({ status: 'not_ready', checks: ['model_api_key'] })
-    expect(neverCalled).not.toHaveBeenCalled()
   })
 
   it('requires a Bearer token and exposes exactly five stateless MCP tools', async () => {

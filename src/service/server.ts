@@ -17,15 +17,13 @@ export async function startPersonalFeedServer(options: {
   readonly application: PersonalFeedApplicationPort
   readonly config: PersonalFeedServiceConfig
   readonly logger?: SafeLogger
-  /** Deliberately unused; readiness must stay local-only. Exposed for a regression test. */
-  readonly networkProbe?: () => Promise<unknown>
 }): Promise<RunningPersonalFeedServer> {
   assertSafeBinding(options.config)
   const active = new Set<Promise<unknown>>()
   const controllers = new Set<AbortController>()
   let closing = false
 
-  const track = <T>(_operation: string, task: Promise<T>, abort: AbortController): Promise<T> => {
+  const track = <T>(task: Promise<T>, abort: AbortController): Promise<T> => {
     controllers.add(abort)
     active.add(task)
     void task.finally(() => {
@@ -71,7 +69,7 @@ async function route(
   request: IncomingMessage,
   response: ServerResponse,
   options: Parameters<typeof startPersonalFeedServer>[0],
-  track: <T>(operation: string, task: Promise<T>, abort: AbortController) => Promise<T>,
+  track: <T>(task: Promise<T>, abort: AbortController) => Promise<T>,
 ): Promise<void> {
   const url = new URL(request.url ?? '/', 'http://127.0.0.1')
   if (request.method === 'GET' && url.pathname === '/healthz') {

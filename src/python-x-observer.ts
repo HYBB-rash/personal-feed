@@ -119,7 +119,9 @@ function parseObservation(raw: string, request: {
     for (const occurrence of face.occurrences) {
       if (!isRecord(occurrence) || typeof occurrence.sourceUrl !== 'string'
         || typeof occurrence.authorHandle !== 'string' || typeof occurrence.publishedAt !== 'string'
-        || !isRecord(occurrence.body) || occurrence.body.kind !== 'sufficient' || typeof occurrence.body.text !== 'string') continue
+        || !isRecord(occurrence.body) || occurrence.body.kind !== 'sufficient' || typeof occurrence.body.text !== 'string') {
+        return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+      }
       const identifier = /^https:\/\/x\.com\/[a-z0-9_]{1,15}\/status\/([1-9]\d*)$/u.exec(occurrence.sourceUrl)?.[1]
       if (identifier === undefined) return Object.freeze({ status: 'incomplete', stage: 'source_window' })
       candidates.push(Object.freeze({

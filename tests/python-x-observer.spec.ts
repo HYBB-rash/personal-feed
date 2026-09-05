@@ -5,6 +5,28 @@ import { describe, expect, it } from 'vitest'
 import { createPythonXObserver } from '../src/python-x-observer.ts'
 
 describe('Python X observer adapter', () => {
+  it('reports an incomplete window when an observed original has insufficient body', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'personal-feed-insufficient-'))
+    const script = join(directory, 'fake-observer.mjs')
+    await writeFile(script, `
+const request = JSON.parse(process.argv[2]);
+const occurrence = {sourceUrl: 'https://x.com/example/status/123', authorHandle: 'example', publishedAt: request.cutoff, occurrenceOrdinal: 0, capturedAt: request.cutoff, body: {kind: 'insufficient', reason: 'empty'}};
+const surfaces = ['for_you', 'following', 'explore'].map((surface, index) => ({kind: 'complete', surface, surfaceOrdinal: index, startedAt: request.cutoff, completedAt: request.cutoff, occurrences: index === 0 ? [occurrence] : []}));
+process.stdout.write(JSON.stringify({...request, kind: 'complete', startedAt: request.cutoff, completedAt: request.cutoff, surfaces}) + '\\n');
+`)
+    const observer = createPythonXObserver({ pythonBin: process.execPath, observerCliPath: script, timeoutMs: 2_000 })
+    try {
+      await expect(observer.observe({
+        requestId: 'pf:00000000000000000000000000000001',
+        cutoff: '2026-09-04T00:00:00.000Z',
+        shanghaiDay: '2026-09-04',
+        signal: new AbortController().signal,
+      })).resolves.toEqual({ status: 'incomplete', stage: 'source_window' })
+    } finally {
+      await observer.close()
+    }
+  })
+
   it('uses a service-generated identity and flattens all three observed surfaces', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'personal-feed-observer-'))
     const script = join(directory, 'fake-observer.mjs')

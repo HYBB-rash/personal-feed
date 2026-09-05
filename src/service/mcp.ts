@@ -60,7 +60,7 @@ export function createPersonalFeedMcpServer(options: {
   readonly application: PersonalFeedApplicationPort
   readonly toolTimeoutMs: number
   readonly logger?: SafeLogger
-  readonly track: <T>(operation: string, task: Promise<T>, abort: AbortController) => Promise<T>
+  readonly track: <T>(task: Promise<T>, abort: AbortController) => Promise<T>
 }): McpServer {
   const server = new McpServer(
     { name: 'personal-feed', version: '0.1.0' },
@@ -148,7 +148,7 @@ function register<Input extends Record<string, unknown>>(
     extra.signal.addEventListener('abort', onClientAbort, { once: true })
     try {
       const task = definition.invoke(input as Input, { signal: abort.signal })
-      const untrustedResult = await options.track(operation, task, abort)
+      const untrustedResult = await options.track(task, abort)
       const structuredContent = definition.outputSchema.parse(untrustedResult) as Record<string, unknown>
       options.logger?.({
         operation,

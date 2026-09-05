@@ -101,6 +101,33 @@ describe('PersonalFeedApplication public contract', () => {
     await app.close()
   })
 
+  it('updates an interest when the user returns to an earlier statement', async () => {
+    const { app } = await fixture({ model: {
+      observeContext: async ({ currentText }) => currentText === 'Feed'
+        ? { status: 'ignored' }
+        : { status: 'applied', facts: [
+          { lane: 'long_term_interest', statement: 'agents', stance: currentText === '不再关注 agents' ? 'exclude' : 'include' },
+          { lane: 'existing_knowledge', statement: 'basic agent loop', epistemic: 'asserted' },
+        ] },
+      judgeCandidate: async ({ personalContext }) => ({
+        status: personalContext.some(fact => fact.lane === 'long_term_interest' && fact.stance === 'include')
+          ? 'qualified' : 'not_qualified',
+      }),
+      interpretFeedback: async () => ({ status: 'pass' }),
+    } })
+
+    try {
+      await app.observeContext({ currentText: '关注 agents' })
+      await app.observeContext({ currentText: '不再关注 agents' })
+      await app.observeContext({ currentText: '关注 agents' })
+      await expect(app.request({ currentText: 'Feed' })).resolves.toEqual({
+        status: 'one_link', url: 'https://x.com/example/status/123',
+      })
+    } finally {
+      await app.close()
+    }
+  })
+
   it('deduplicates stable ids across three surfaces and never reselects processed candidates after restart', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'personal-feed-history-'))
     const judgeCandidate = vi.fn(async ({ candidate }: Parameters<PersonalFeedModel['judgeCandidate']>[0]) => ({
@@ -138,7 +165,7 @@ describe('PersonalFeedApplication public contract', () => {
     await reopened.close()
   })
 
-  it('serializes full request operations', async () => {
+  it('serializes full requests without reselecting their shared candidate', async () => {
     let active = 0
     let maximum = 0
     let releaseFirst!: () => void
@@ -151,7 +178,10 @@ describe('PersonalFeedApplication public contract', () => {
         calls += 1
         if (calls === 1) await gate
         active -= 1
-        return { status: 'complete' as const, candidates: [] }
+        return { status: 'complete' as const, candidates: [{
+          stableId: 'x-status:123', canonicalUrl: 'https://x.com/example/status/123',
+          body: 'A concrete update about agents.', authorHandle: 'example', publishedAt: '2026-09-04T01:00:00.000Z',
+        }] }
       }),
       close: vi.fn(async () => undefined),
     } })
@@ -160,7 +190,10 @@ describe('PersonalFeedApplication public contract', () => {
     const second = app.request({ currentText: '我长期关注 databases' })
     await vi.waitFor(() => expect(calls).toBe(1))
     releaseFirst()
-    await Promise.all([first, second])
+    expect(await Promise.all([first, second])).toEqual([
+      { status: 'one_link', url: 'https://x.com/example/status/123' },
+      { status: 'business_empty' },
+    ])
 
     expect(maximum).toBe(1)
     await app.close()

@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { constants } from 'node:fs'
 import {
-  access,
   chmod,
   copyFile,
   cp,
@@ -13,7 +11,6 @@ import {
   rename,
   rm,
   symlink,
-  writeFile,
 } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 
@@ -29,15 +26,6 @@ interface BackupEntry {
 interface BackupManifest {
   readonly version: 1
   readonly entries: readonly BackupEntry[]
-}
-
-export async function pathExists(path: string): Promise<boolean> {
-  try {
-    await access(path, constants.F_OK)
-    return true
-  } catch {
-    return false
-  }
 }
 
 export async function readOptional(path: string): Promise<string> {
@@ -61,36 +49,6 @@ export async function atomicWrite(path: string, content: string, mode: number): 
   }
   await chmod(temporary, mode)
   await rename(temporary, path)
-}
-
-export async function atomicInstallDirectory(source: string, target: string, marker?: string): Promise<void> {
-  await mkdir(dirname(target), { recursive: true, mode: 0o700 })
-  const temporary = join(dirname(target), `.${basename(target)}.${randomUUID()}.tmp`)
-  const displaced = join(dirname(target), `.${basename(target)}.${randomUUID()}.old`)
-  let targetWasDisplaced = false
-  try {
-    await cp(source, temporary, { recursive: true, errorOnExist: true, force: false })
-    if (marker !== undefined) await writeFile(join(temporary, marker), 'owned by personal-feed installer\n', { mode: 0o600 })
-    try {
-      await lstat(target)
-      await rename(target, displaced)
-      targetWasDisplaced = true
-    } catch (error) {
-      if (!isNotFound(error)) throw error
-    }
-    await rename(temporary, target)
-    if (targetWasDisplaced) await rm(displaced, { recursive: true, force: true })
-  } catch (error) {
-    await rm(temporary, { recursive: true, force: true })
-    if (targetWasDisplaced) {
-      try {
-        await lstat(target)
-      } catch (targetError) {
-        if (isNotFound(targetError)) await rename(displaced, target)
-      }
-    }
-    throw error
-  }
 }
 
 export async function createBackup(

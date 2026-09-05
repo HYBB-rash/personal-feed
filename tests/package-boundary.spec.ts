@@ -24,9 +24,9 @@ describe('standalone package boundary', () => {
     for (const forbidden of forbiddenRuntimeReferences) expect(dependencyNames).not.toMatch(forbidden)
   })
 
-  it('keeps the running service and observer free of DSH and channel identity', async () => {
+  it('keeps the whole package and observer free of host and channel dependencies', async () => {
     const runtimeFiles = [
-      ...(await sourceFiles('src')).filter((file) => !file.startsWith('src/install/') && file !== 'src/cli.ts'),
+      ...(await sourceFiles('src')),
       ...(await sourceFiles('python')).filter((file) => !file.startsWith('python/test_')),
     ]
     for (const file of runtimeFiles) {

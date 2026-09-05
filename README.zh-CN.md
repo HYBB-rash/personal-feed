@@ -59,35 +59,28 @@ nix run . -- service install --apply
 
 `--apply` 从该 commit 构建 Nix 运行物，安装一个 user systemd unit、权限为 `0600` 的独立配置和状态目录，然后启动 PF。它不配置或重启 DSH。
 
-## 可选 DSH 接入
+## Agent 接入
 
-PF 已运行后，配置端点和同一份 MCP token：
+服务运行后，在所用 Agent 的通用 MCP Client 中配置：
 
-```sh
-export PERSONAL_FEED_MCP_URL='http://127.0.0.1:43180/mcp'
-export PERSONAL_FEED_MCP_TOKEN='<高熵服务 token>'
-export DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
-nix run . -- dsh install --check
-```
+| 配置 | 值 |
+|---|---|
+| 传输 | Streamable HTTP |
+| MCP 端点 | `http://127.0.0.1:43180/mcp` |
+| 请求头 | `Authorization: Bearer <服务 MCP token>` |
+| Server name | `personal_feed` |
 
-另行授权机器态接入后才执行：
+将本仓的 [`skills/personal-feed`](skills/personal-feed/SKILL.md) 通过 Agent 自己的 Skill 安装方式加载。用户随后从正常对话请求 Personal Feed，由 Agent 调用工具。配置字段名和凭据存储方式由具体 Client 决定；工具超时应覆盖服务的 `PERSONAL_FEED_TOOL_TIMEOUT_MS`。
 
-```sh
-nix run . -- dsh install --apply
-```
+Personal Feed 只安装自身服务。原来的 `dsh install` 和 `dsh rollback` 命令已移除；宿主的 MCP 配置与 Skill 安装由宿主管理。已安装的接入不会因源码删减而卸载；如需撤销旧安装器的机器态改动，使用产生该备份的旧版本。
 
-DSH 安装器会先确认 `readyz.status=ready` 和精确五个工具，再原子安装本仓的 instruction-only Skill、一条有归属标记的通用 `@deepseek-ai/dsh-mcp-client` 配置，以及权限为 `0600` 的 URL/token 环境文件。配置固定 `serverName: personal_feed`、`failOnStartupError: false` 和 120 秒工具超时。遇到用户自己的同名配置或 Skill 会拒绝覆盖。它不重启、发布或切换 DSH。
-
-两个安装器都可重复执行。真正改动时会生成备份并打印明确回滚命令：
+服务安装可重复执行，改动时会打印备份路径和回滚命令：
 
 ```sh
 nix run . -- service rollback --apply '<backup-directory>'
-nix run . -- dsh rollback --apply '<backup-directory>'
 ```
 
-服务回滚只撤销 unit 和配置，不删除独立状态目录；试运行期间产生的数据会保留，是否迁移或删除另行决定。
-
-DSH 重启、生产切换、真实 Web/Telegram 验收、`accept`、创建公开仓库、merge 和 push 都是分开的操作决定。
+服务回滚撤销 unit 和配置，保留独立状态目录。
 
 ## 日志
 

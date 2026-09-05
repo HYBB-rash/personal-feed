@@ -2718,7 +2718,7 @@ process.stdout.write(JSON.stringify({
         class Evaluator:
             def evaluate(self, ws_url, action, *, surface, stable_id=None, timeout_seconds=None):
                 if action == "navigate":
-                    return {"url": observer_module.TARGETS[surface], "body": ""}
+                    return {"url": "https://x.com/search" if surface == "explore" else "https://x.com/home", "body": ""}
                 if action == "probe":
                     return {"surfaceProof": dict(observer_module.PROOFS[surface])}
                 if action == "snapshot":

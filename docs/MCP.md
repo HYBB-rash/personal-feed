@@ -12,6 +12,6 @@
 | `record_feedback` | `{operation:"save"|"unsave",url,title?,note?}` | `{status:"saved"}`、`{status:"unsaved"}`、`{status:"already_saved"}` 或 `{status:"already_unsaved"}` |
 | `list_saved` | `{limit?}`，默认 20，服务入口最大 100 | `{status:"completed",items:[{url,title?,note?,savedAt}]}` |
 
-`request` 已在内部观察本轮语境，同一轮不要再调用 `observe_context`。`observe_context` 只接收用户直接表达的长期兴趣或已有认识。`process_feedback` 返回 `needs_input` 后，调用方必须把下一条用户原文作为新的 `currentText`，并原样传回 32 字节随机值编码成的 43 字符 `continuationToken`。`record_feedback` 只管理收藏，不代表喜欢或不喜欢。
+`request` 已在内部观察本轮语境，同一轮不要再调用 `observe_context`。每次调用都根据当前事实重新观察用户原话，不按历史原话跳过；同一句话在关注变化后再次表达仍可更新语境。`already_observed` 保留在公开结果类别中。`observe_context` 只接收用户直接表达的长期兴趣或已有认识。`process_feedback` 返回 `needs_input` 后，调用方必须把下一条用户原文作为新的 `currentText`，并原样传回 32 字节随机值编码成的 43 字符 `continuationToken`。`record_feedback` 只管理收藏，不代表喜欢或不喜欢。
 
 `business_empty`、`needs_input` 和可说明阶段的 `incomplete` 都是正常业务结果。Bearer 鉴权失败、非法输入 schema、内部返回越出上述封闭合同，以及存储故障才是 MCP error。服务错误不会伪装成空 Feed。

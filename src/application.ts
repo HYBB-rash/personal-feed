@@ -128,7 +128,6 @@ export interface CreatePersonalFeedApplicationOptions {
 type ContextState = {
   readonly schemaVersion: 1
   readonly generation: number
-  readonly observed: readonly string[]
   readonly facts: readonly PersonalContextFact[]
 }
 
@@ -170,7 +169,7 @@ type FeedbackEvent = {
   readonly createdAt: string
 }
 
-const EMPTY_CONTEXT: ContextState = Object.freeze({ schemaVersion: 1, generation: 0, observed: [], facts: [] })
+const EMPTY_CONTEXT: ContextState = Object.freeze({ schemaVersion: 1, generation: 0, facts: [] })
 const EMPTY_PENDING: PendingState = Object.freeze({ schemaVersion: 1, generation: 0, entries: {} })
 
 export function createPersonalFeedApplication(options: CreatePersonalFeedApplicationOptions): PersonalFeedApplication {
@@ -179,7 +178,6 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? 10_000
   const requestQueue = new AsyncQueue()
   const contextQueue = new AsyncQueue()
-  const candidateQueue = new AsyncQueue()
   const feedbackQueue = new AsyncQueue()
   const savedQueue = new AsyncQueue()
   const shutdown = new AbortController()
@@ -200,9 +198,7 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
 
   const observeContextWithSignal = async (currentText: string, signal: AbortSignal): Promise<ObserveContextResult> => {
     const text = validateText(currentText, 'currentText')
-    const sourceHash = hashText(text)
     const before = await contextQueue.run(async () => loadContext(contextPath))
-    if (before.observed.includes(sourceHash)) return Object.freeze({ status: 'already_observed' })
     if (signal.aborted) return Object.freeze({ status: 'incomplete', stage: 'context_observation' })
     let interpreted: Awaited<ReturnType<PersonalFeedModel['observeContext']>>
     try {
@@ -218,13 +214,11 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     }
     return contextQueue.run(async () => {
       const latest = await loadContext(contextPath)
-      if (latest.observed.includes(sourceHash)) return Object.freeze({ status: 'already_observed' })
       if (latest.generation !== before.generation) return Object.freeze({ status: 'incomplete', stage: 'conflict' })
       const added = interpreted.status === 'applied' ? mergeFacts(latest.facts, interpreted.facts) : [...latest.facts]
       const next: ContextState = {
         schemaVersion: 1,
         generation: latest.generation + 1,
-        observed: [...latest.observed, sourceHash].slice(-10_000),
         facts: added,
       }
       await atomicWriteJson(contextPath, next)
@@ -268,9 +262,8 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
         return Object.freeze({ status: 'incomplete', stage: 'source_window' })
       }
       const candidates = uniqueCandidates(observedWindow.candidates)
-      const startRecords = await candidateQueue.run(async () => loadCandidateRecords(candidatesPath))
+      const startRecords = await loadCandidateRecords(candidatesPath)
       const processed = new Set(startRecords.map(record => record.stableId))
-      let expectedGeneration = startRecords.length
       for (const candidate of candidates) {
         if (processed.has(candidate.stableId)) continue
         let judgment: Awaited<ReturnType<PersonalFeedModel['judgeCandidate']>>
@@ -289,22 +282,15 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
         if (signal.aborted || judgment.status === 'incomplete') {
           return Object.freeze({ status: 'incomplete', stage: 'judgement_execution' })
         }
-        const committed = await candidateQueue.run(async () => {
-          const latest = await loadCandidateRecords(candidatesPath)
-          if (latest.length !== expectedGeneration || latest.some(record => record.stableId === candidate.stableId)) return false
-          const record: CandidateRecord = {
-            schemaVersion: 1,
-            event: 'candidate_processed',
-            stableId: candidate.stableId,
-            canonicalUrl: candidate.canonicalUrl,
-            judgment: judgment.status,
-            processedAt: validNow(now).toISOString(),
-          }
-          await appendJsonLine(candidatesPath, record)
-          expectedGeneration += 1
-          return true
-        })
-        if (!committed) return Object.freeze({ status: 'incomplete', stage: 'conflict' })
+        const record: CandidateRecord = {
+          schemaVersion: 1,
+          event: 'candidate_processed',
+          stableId: candidate.stableId,
+          canonicalUrl: candidate.canonicalUrl,
+          judgment: judgment.status,
+          processedAt: validNow(now).toISOString(),
+        }
+        await appendJsonLine(candidatesPath, record)
         if (judgment.status === 'qualified') return Object.freeze({ status: 'one_link', url: candidate.canonicalUrl })
       }
       return Object.freeze({ status: 'business_empty' })
@@ -453,7 +439,7 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     shutdown.abort(new Error('personal-feed shutdown'))
     await Promise.allSettled([options.observer.close()])
     const idle = Promise.all([
-      requestQueue.idle(), contextQueue.idle(), candidateQueue.idle(), feedbackQueue.idle(), savedQueue.idle(),
+      requestQueue.idle(), contextQueue.idle(), feedbackQueue.idle(), savedQueue.idle(),
     ]).then(() => undefined)
     await Promise.race([idle, new Promise<void>(resolve => setTimeout(resolve, shutdownTimeoutMs))])
   }
@@ -507,14 +493,9 @@ function shanghaiDay(stamp: string): string {
   return new Date(Date.parse(stamp) + 8 * 60 * 60 * 1_000).toISOString().slice(0, 10)
 }
 
-function hashText(text: string): string {
-  return createHash('sha256').update(text).digest('hex')
-}
-
 async function loadContext(path: string): Promise<ContextState> {
   const value = await readJson<unknown>(path, EMPTY_CONTEXT)
   if (!isRecord(value) || value.schemaVersion !== 1 || !Number.isSafeInteger(value.generation)
-    || !Array.isArray(value.observed) || value.observed.some(item => typeof item !== 'string')
     || !Array.isArray(value.facts) || !validFacts(value.facts)) throw new PersonalFeedStorageError('personal context state is invalid')
   return value as unknown as ContextState
 }

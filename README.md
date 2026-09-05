@@ -1,6 +1,6 @@
 # Personal Feed
 
-Personal Feed is a standalone, single-user MCP service. It observes an already-open, already-authenticated X page, applies private preference and feedback state, and exposes a small channel-neutral tool API. Telegram, Web, or any other interface may reach it only through an MCP-capable Agent.
+Personal Feed is a standalone, single-user MCP service. It observes an already-open, already-authenticated X page, maintains private personal context, feedback records, and saved items, and exposes a small channel-neutral tool API. Telegram, Web, or any other interface may reach it only through an MCP-capable Agent.
 
 ```text
 Telegram / Web -> Agent -> generic MCP client -> 127.0.0.1 Personal Feed service
@@ -59,40 +59,28 @@ nix run . -- service install --apply
 
 `--apply` builds the exact clean Git commit through Nix, installs one user systemd unit plus private configuration, creates the independent state directory, and starts that service. It prints a backup directory and an explicit rollback command. It does not configure or restart DSH.
 
-## Optional DSH integration
+## Agent integration
 
-After the Personal Feed service is running, export its MCP endpoint and the same MCP token:
+After the service is running, configure the Agent's generic MCP client:
 
-```sh
-export PERSONAL_FEED_MCP_URL='http://127.0.0.1:43180/mcp'
-export PERSONAL_FEED_MCP_TOKEN='<high-entropy-service-token>'
-export DSH_HOME="${DSH_HOME:-$HOME/.dsh}"
-```
+| Setting | Value |
+|---|---|
+| Transport | Streamable HTTP |
+| MCP endpoint | `http://127.0.0.1:43180/mcp` |
+| Request header | `Authorization: Bearer <service MCP token>` |
+| Server name | `personal_feed` |
 
-Review without changing DSH:
+Load this repository's [`skills/personal-feed`](skills/personal-feed/SKILL.md) through the Agent's own Skill installation mechanism. Users can then request Personal Feed in normal conversation. Configuration field names and credential storage depend on the client; its tool timeout should cover the service's `PERSONAL_FEED_TOOL_TIMEOUT_MS`.
 
-```sh
-nix run . -- dsh install --check
-```
+Personal Feed installs only its own service. The former `dsh install` and `dsh rollback` commands have been removed; the host manages its MCP configuration and Skills. Existing integrations remain installed. To undo changes made by the old installer, use the version that produced the backup.
 
-Apply only after separately authorizing the machine-local integration:
-
-```sh
-nix run . -- dsh install --apply
-```
-
-The DSH installer first requires `readyz.status=ready` and exactly the five known MCP tools. It then atomically installs this repository's instruction-only Skill, one installer-owned generic `@deepseek-ai/dsh-mcp-client` row, and URL/token variables in a mode-`0600` `.env`. It fixes `serverName: personal_feed`, `failOnStartupError: false`, and a 120-second tool timeout. It refuses to overwrite user-owned rows or Skills and never restarts, releases, or switches DSH.
-
-Both installers are idempotent. Every applied change has a private backup and a printed command of the form:
+Service installation is idempotent and prints a backup path and rollback command when it makes changes:
 
 ```sh
 nix run . -- service rollback --apply '<backup-directory>'
-nix run . -- dsh rollback --apply '<backup-directory>'
 ```
 
-Service rollback removes the installed unit and configuration but preserves the independent state directory. Data created during a trial remains available for a separate migration or deletion decision.
-
-Review the backup path before rollback. DSH restart, production cutover, real Web/Telegram validation, acceptance, publishing, merging, and pushing are deliberately separate operator decisions.
+Service rollback restores the unit and configuration and preserves the independent state directory.
 
 ## Logs and data
 

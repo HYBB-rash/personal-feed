@@ -9,11 +9,6 @@ from urllib.parse import urlsplit
 
 
 SURFACES = ("for_you", "following", "explore")
-TARGETS = {
-    "for_you": "https://x.com/home",
-    "following": "https://x.com/home",
-    "explore": "https://x.com/explore",
-}
 PROOFS = {
     "for_you": {"pathname": "/home", "selectedHomeTabOrdinal": 0, "explore" + "Root": False},
     "following": {"pathname": "/home", "selectedHomeTabOrdinal": 1, "explore" + "Root": False},

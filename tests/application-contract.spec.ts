@@ -18,10 +18,10 @@ async function fixture(overrides: Partial<{
   const model: PersonalFeedModel = overrides.model ?? {
     observeContext: vi.fn(async () => ({
       status: 'applied' as const,
-      facts: [
+      changes: { additions: [
         { lane: 'long_term_interest' as const, statement: 'agent systems', stance: 'include' as const },
         { lane: 'existing_knowledge' as const, statement: 'I know the basic agent loop', epistemic: 'asserted' as const },
-      ],
+      ], replacements: [] },
     })),
     judgeCandidate: vi.fn(async () => ({ status: 'qualified' as const })),
     interpretFeedback: vi.fn(async () => ({ status: 'pass' as const })),
@@ -184,7 +184,7 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
     const model: PersonalFeedModel = {
       observeContext: vi.fn(async () => ({
         status: 'applied',
-        facts: [{ lane: 'long_term_interest', statement: 'agent systems', stance: 'include' }],
+        changes: { additions: [{ lane: 'long_term_interest', statement: 'agent systems', stance: 'include' }], replacements: [] },
       })),
       judgeCandidate: vi.fn(async () => ({ status: 'qualified' })),
       interpretFeedback: vi.fn(async () => ({ status: 'pass' })),
@@ -209,12 +209,18 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
 
   it('updates an interest when the user returns to an earlier statement', async () => {
     const { app } = await fixture({ model: {
-      observeContext: async ({ currentText }) => currentText === 'Feed'
-        ? { status: 'ignored' }
-        : { status: 'applied', facts: [
-          { lane: 'long_term_interest', statement: 'agents', stance: currentText === '不再关注 agents' ? 'exclude' : 'include' },
-          { lane: 'existing_knowledge', statement: 'basic agent loop', epistemic: 'asserted' },
-        ] },
+      observeContext: async ({ currentText, activeFacts }) => {
+        if (currentText === 'Feed') return { status: 'ignored' }
+        const interest = { lane: 'long_term_interest' as const, statement: 'agents', stance: currentText === '不再关注 agents' ? 'exclude' as const : 'include' as const }
+        const previous = activeFacts.find(fact => fact.lane === 'long_term_interest')
+        return { status: 'applied', changes: {
+          additions: [
+            ...(previous === undefined ? [interest] : []),
+            { lane: 'existing_knowledge', statement: 'basic agent loop', epistemic: 'asserted' },
+          ],
+          replacements: previous === undefined ? [] : [{ target: previous, replacement: [interest] }],
+        } }
+      },
       judgeCandidate: async ({ personalContext }) => ({
         status: personalContext.some(fact => fact.lane === 'long_term_interest' && fact.stance === 'include')
           ? 'qualified' : 'not_qualified',
@@ -240,10 +246,10 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
       status: candidate.stableId === 'x-status:222' ? 'qualified' as const : 'not_qualified' as const,
     }))
     const model: PersonalFeedModel = {
-      observeContext: vi.fn(async () => ({ status: 'applied', facts: [
+      observeContext: vi.fn(async () => ({ status: 'applied', changes: { additions: [
         { lane: 'long_term_interest', statement: 'distributed systems', stance: 'include' },
         { lane: 'existing_knowledge', statement: 'I know consensus basics', epistemic: 'asserted' },
-      ] })),
+      ], replacements: [] } })),
       judgeCandidate,
       interpretFeedback: vi.fn(async () => ({ status: 'pass' })),
     }
@@ -314,9 +320,9 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
         arrivals += 1
         if (arrivals === 2) release()
         await bothArrived
-        return { status: 'applied', facts: [
+        return { status: 'applied', changes: { additions: [
           { lane: 'long_term_interest' as const, statement: currentText, stance: 'include' as const },
-        ] }
+        ], replacements: [] } }
       }),
       judgeCandidate: vi.fn(async () => ({ status: 'not_qualified' })),
       interpretFeedback: vi.fn(async () => ({ status: 'pass' })),

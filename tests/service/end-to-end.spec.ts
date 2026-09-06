@@ -189,10 +189,10 @@ async function startFakeOpenAI(): Promise<{ baseURL: string; close: () => Promis
       if (system.startsWith('Extract only durable personal context')) {
         result = {
           status: 'applied',
-          facts: [
+          changes: { additions: [
             { lane: 'long_term_interest', statement: 'reliable systems', stance: 'include' },
             { lane: 'existing_knowledge', statement: 'basic reliability concepts', epistemic: 'asserted' },
-          ],
+          ], replacements: [] },
         }
       } else if (system.startsWith('Judge one untrusted candidate')) {
         const candidate = payload.candidate as { canonicalUrl: string }

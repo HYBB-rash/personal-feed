@@ -12,6 +12,14 @@ export type PersonalContextFact =
   | { readonly lane: 'long_term_interest'; readonly statement: string; readonly stance: 'include' | 'exclude' }
   | { readonly lane: 'existing_knowledge'; readonly statement: string; readonly epistemic: 'asserted' | 'uncertain' }
 
+export interface ContextChanges {
+  readonly additions: readonly PersonalContextFact[]
+  readonly replacements: readonly {
+    readonly target: PersonalContextFact
+    readonly replacement: readonly PersonalContextFact[]
+  }[]
+}
+
 export interface XCandidate {
   readonly stableId: string
   readonly canonicalUrl: string
@@ -45,7 +53,7 @@ export interface PersonalFeedModel {
     readonly activeFacts: readonly PersonalContextFact[]
     readonly signal: AbortSignal
   }) => Promise<
-    | { readonly status: 'applied'; readonly facts: readonly PersonalContextFact[] }
+    | { readonly status: 'applied'; readonly changes: ContextChanges }
     | { readonly status: 'ignored' }
     | { readonly status: 'incomplete' }
   >
@@ -225,22 +233,22 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     if (signal.aborted || interpreted.status === 'incomplete') {
       return Object.freeze({ status: 'incomplete', stage: 'context_observation' })
     }
-    if (interpreted.status === 'applied' && !validFacts(interpreted.facts)) {
-      return Object.freeze({ status: 'incomplete', stage: 'context_observation' })
-    }
+    const applied = interpreted.status === 'applied'
+      ? applyContextChanges(before.facts, interpreted.changes)
+      : { facts: before.facts, appliedCount: 0 }
+    if (applied === undefined) return Object.freeze({ status: 'incomplete', stage: 'context_observation' })
     return contextQueue.run(async () => {
       const latest = await loadContext(contextPath)
       if (latest.generation !== before.generation) return Object.freeze({ status: 'incomplete', stage: 'conflict' })
-      const added = interpreted.status === 'applied' ? mergeFacts(latest.facts, interpreted.facts) : [...latest.facts]
       const next: ContextState = {
         schemaVersion: 1,
         generation: latest.generation + 1,
-        facts: added,
+        facts: applied.facts,
       }
       await atomicWriteJson(contextPath, next)
       return interpreted.status === 'ignored'
         ? Object.freeze({ status: 'ignored' as const })
-        : Object.freeze({ status: 'applied' as const, appliedCount: added.length - latest.facts.length })
+        : Object.freeze({ status: 'applied' as const, appliedCount: applied.appliedCount })
     })
   }
 
@@ -268,6 +276,7 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
         return Object.freeze({ status: 'incomplete', stage: observed.stage === 'conflict' ? 'conflict' : 'context_observation' })
       }
       const personalContext = (await contextQueue.run(async () => loadContext(contextPath))).facts
+        .filter(fact => fact.lane !== 'existing_knowledge' || fact.epistemic === 'asserted')
       if (!contextIsSufficient(personalContext)) return Object.freeze({ status: 'incomplete', stage: 'personal_context' })
       const cutoff = validNow(now).toISOString()
       const requestId = `pf:${randomBytes(16).toString('hex')}`
@@ -533,10 +542,62 @@ function validFacts(value: readonly unknown[]): value is readonly PersonalContex
         && exactKeys(fact, ['lane', 'statement', 'epistemic'])))
 }
 
-function mergeFacts(existing: readonly PersonalContextFact[], incoming: readonly PersonalContextFact[]): PersonalContextFact[] {
-  const merged = new Map(existing.map(fact => [`${fact.lane}:${fact.statement.toLocaleLowerCase()}`, fact]))
-  for (const fact of incoming) merged.set(`${fact.lane}:${fact.statement.toLocaleLowerCase()}`, Object.freeze({ ...fact }))
-  return [...merged.values()]
+function applyContextChanges(existing: readonly PersonalContextFact[], changes: unknown): {
+  readonly facts: readonly PersonalContextFact[]
+  readonly appliedCount: number
+} | undefined {
+  if (!validContextChanges(changes)) return undefined
+  const replacements = new Map<number, readonly PersonalContextFact[]>()
+  let appliedCount = 0
+  for (const entry of changes.replacements) {
+    const index = existing.findIndex(fact => sameFact(fact, entry.target))
+    if (index === -1 || replacements.has(index)) return undefined
+    const replacement = distinctFacts(entry.replacement)
+    if (replacement === undefined) return undefined
+    replacements.set(index, replacement)
+    if (replacement.length !== 1 || !sameFact(replacement[0]!, entry.target)) appliedCount += 1
+  }
+  const retained = distinctFacts(existing.flatMap((fact, index) => replacements.get(index) ?? [fact]))
+  if (retained === undefined) return undefined
+  const facts = new Map(retained.map(fact => [factKey(fact), fact]))
+  for (const fact of changes.additions) {
+    const previous = facts.get(factKey(fact))
+    if (previous !== undefined) {
+      if (!sameFact(previous, fact)) return undefined
+      continue
+    }
+    facts.set(factKey(fact), fact)
+    appliedCount += 1
+  }
+  return { facts: [...facts.values()].map(fact => Object.freeze({ ...fact })), appliedCount }
+}
+
+function validContextChanges(value: unknown): value is ContextChanges {
+  return isRecord(value) && exactKeys(value, ['additions', 'replacements'])
+    && Array.isArray(value.additions) && validFacts(value.additions)
+    && Array.isArray(value.replacements) && value.replacements.every(entry =>
+      isRecord(entry) && exactKeys(entry, ['target', 'replacement']) && validFacts([entry.target])
+      && Array.isArray(entry.replacement) && validFacts(entry.replacement))
+}
+
+function distinctFacts(input: readonly PersonalContextFact[]): PersonalContextFact[] | undefined {
+  const facts = new Map<string, PersonalContextFact>()
+  for (const fact of input) {
+    const previous = facts.get(factKey(fact))
+    if (previous !== undefined && !sameFact(previous, fact)) return undefined
+    facts.set(factKey(fact), fact)
+  }
+  return [...facts.values()]
+}
+
+function factKey(fact: PersonalContextFact): string {
+  return `${fact.lane}:${fact.statement.toLocaleLowerCase()}`
+}
+
+function sameFact(left: PersonalContextFact, right: PersonalContextFact): boolean {
+  return left.statement === right.statement && (left.lane === 'long_term_interest'
+    ? right.lane === left.lane && left.stance === right.stance
+    : right.lane === left.lane && left.epistemic === right.epistemic)
 }
 
 function contextIsSufficient(facts: readonly PersonalContextFact[]): boolean {

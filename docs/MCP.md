@@ -58,6 +58,8 @@
 
 token 保持 32 字节随机值编码成的 43 字符 base64url 格式，不展示给用户，不进入可读文本或日志。格式非法为 MCP 输入错误；格式合法但无法关联时，`observe_context` 返回 `incomplete/context_observation`，`process_feedback` 返回 `incomplete/feedback_interpretation`，不制造新问题、修改个人信息或重跑 Feed。
 
+`observe_context.appliedCount` 是本次实际提交的变更项数：有效新增一条计一项，替换或撤回一个旧事实计一项（拆分为多条仍计一项）。重复新增和等值替换计零项；它不是事实总数的增量，也不表示个人信息已经足够。
+
 `business_empty`、`needs_input` 和可说明阶段的 `incomplete` 都是正常业务结果。Bearer 鉴权失败、非法输入 schema、内部返回越出上述封闭合同，以及存储故障才是 MCP error。服务错误不会伪装成空 Feed。
 
 ## 当前支持边界

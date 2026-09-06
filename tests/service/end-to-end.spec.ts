@@ -231,7 +231,7 @@ async function startFakeOpenAI(options: {
         if (options.unfinishedJudgment) {
           result = { longTermValue: 'pass', longTermInterestMatch: 'not_reached', informationIncrement: 'not_reached' }
         } else if (candidate.canonicalUrl.endsWith('/1') || candidate.canonicalUrl.endsWith('/2')) {
-          result = candidate.canonicalUrl.endsWith('/2') && payload.currentText === '再来一条。'
+          result = candidate.canonicalUrl.endsWith('/2') && payload.requestText === '再来一条。'
             ? { longTermValue: 'fail', longTermInterestMatch: 'not_reached', informationIncrement: 'not_reached' }
             : { longTermValue: 'pass', longTermInterestMatch: 'pass', informationIncrement: 'pass' }
         } else {

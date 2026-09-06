@@ -75,7 +75,7 @@ export interface PersonalFeedModel {
     | { readonly status: 'incomplete' }
   )>
   readonly judgeCandidate: (input: {
-    readonly currentText: string
+    readonly requestText: string
     readonly personalContext: readonly PersonalContextFact[]
     readonly candidate: XCandidate
     readonly cutoff: string
@@ -124,6 +124,7 @@ type ContextPreparation = {
   readonly result: ObserveContextResult
   readonly effectiveFacts: readonly PersonalContextFact[]
   readonly sufficient?: boolean
+  readonly resumeRequestText?: string
 }
 
 export type ProcessFeedbackResult = (
@@ -201,6 +202,7 @@ type SavedEvent = {
 
 type PendingEntry = {
   readonly tool: 'context' | 'feedback'
+  readonly resumeFeed?: true
   readonly clarification: ClarificationInput
 }
 
@@ -244,13 +246,13 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
       ? { question: entry.clarification.question, continuationToken: token } : {}
 
   const finishQuestion = (tool: PendingEntry['tool'], currentText: string, remaining: RemainingClarification | null | undefined,
-    token?: string, prior?: PendingEntry, referenceText?: string, resolvedReferenceText?: string): QuestionHandoff => {
+    token?: string, prior?: PendingEntry, referenceText?: string, resolvedReferenceText?: string, resumeFeed = false): QuestionHandoff => {
     if (token !== undefined) pending.delete(token)
     if (remaining == null) return {}
     const continuationToken = randomBytes(32).toString('base64url')
     const original = prior?.clarification
     const originalReference = (prior === undefined ? referenceText : original?.referenceText) ?? resolvedReferenceText
-    pending.set(continuationToken, Object.freeze({ tool, clarification: Object.freeze({
+    pending.set(continuationToken, Object.freeze({ tool, ...(resumeFeed ? { resumeFeed: true as const } : {}), clarification: Object.freeze({
       originalText: original?.originalText ?? currentText,
       ...(originalReference === undefined ? {} : { referenceText: originalReference }),
       ...remaining,
@@ -265,6 +267,7 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
       result: Object.freeze({ status: 'incomplete', stage, ...(prior?.tool === 'context' ? questionPair(token, prior) : {}) }), effectiveFacts: [],
     })
     if (token !== undefined && prior?.tool !== 'context') return incomplete()
+    assessForFeed = assessForFeed || prior?.resumeFeed === true
     const before = await contextQueue.run(async () => loadContext(contextPath))
     if (signal.aborted) return incomplete()
     let interpreted: Awaited<ReturnType<PersonalFeedModel['observeContext']>>
@@ -283,18 +286,23 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
       ? applyContextChanges(before.facts, interpreted.changes)
       : { facts: before.facts, appliedCount: 0 }
     if (applied === undefined) return incomplete()
+    const effectiveFacts = Object.freeze(applied.facts.filter(fact => fact.lane !== 'existing_knowledge' || fact.epistemic === 'asserted'))
+    const ready = sufficient === true && contextIsSufficient(effectiveFacts)
+    // A waiting request must keep a usable question until its facts are sufficient.
+    if (prior?.resumeFeed && !ready && interpreted.remaining == null) return incomplete()
     return contextQueue.run(async () => {
       const latest = await loadContext(contextPath)
       if (latest.generation !== before.generation || token !== undefined && pending.get(token) !== prior) return incomplete('conflict')
       if (signal.aborted) return incomplete()
       const next: ContextState = { schemaVersion: 1, generation: latest.generation + 1, facts: applied.facts }
       await atomicWriteJson(contextPath, next)
-      const pair = finishQuestion('context', currentText, interpreted.remaining, token, prior, undefined, interpreted.resolvedReferenceText)
+      const pair = finishQuestion('context', currentText, interpreted.remaining, token, prior, undefined, interpreted.resolvedReferenceText, assessForFeed && !ready)
       return Object.freeze({
         result: interpreted.status === 'ignored'
           ? Object.freeze({ status: 'ignored' as const, ...pair })
           : Object.freeze({ status: 'applied' as const, appliedCount: applied.appliedCount, ...pair }),
-        effectiveFacts: Object.freeze(next.facts.filter(fact => fact.lane !== 'existing_knowledge' || fact.epistemic === 'asserted')),
+        effectiveFacts,
+        ...(prior?.resumeFeed && ready ? { resumeRequestText: prior.clarification.originalText } : {}),
         ...(assessForFeed && typeof sufficient === 'boolean' ? { sufficient } : {}),
       })
     })
@@ -308,7 +316,11 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     const currentText = validateText(input.currentText, 'currentText')
     const token = optionalToken(input.continuationToken)
     const signal = signalFor(call)
-    return (await observeContextWithSignal(currentText, signal, false, token)).result
+    const prepared = await observeContextWithSignal(currentText, signal, false, token)
+    if (prepared.resumeRequestText === undefined) return prepared.result
+    const requestText = prepared.resumeRequestText
+    const feed = await requestQueue.run(() => runPreparedFeed(requestText, prepared.effectiveFacts, signal))
+    return Object.freeze({ ...prepared.result, feed })
   }
 
   const request = async (input: { readonly currentText: string }, call?: CallOptions): Promise<RequestResult> => {
@@ -327,57 +339,63 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
       if (!prepared.sufficient || !contextIsSufficient(personalContext)) {
         return Object.freeze({ ...pair, status: 'incomplete', stage: 'personal_context' })
       }
-      const cutoff = validNow(now).toISOString()
-      const requestId = `pf:${randomBytes(16).toString('hex')}`
-      let observedWindow: XObservation
+      return Object.freeze({ ...pair, ...await runPreparedFeed(currentText, personalContext, signal) })
+    })
+  }
+
+  // Both entry points select from the same accepted snapshot, without reinterpreting text.
+  const runPreparedFeed = async (requestText: string, personalContext: readonly PersonalContextFact[], signal: AbortSignal): Promise<FeedResult> => {
+    if (signal.aborted) return Object.freeze({ status: 'incomplete', stage: 'shutdown' })
+    const cutoff = validNow(now).toISOString()
+    const requestId = `pf:${randomBytes(16).toString('hex')}`
+    let observedWindow: XObservation
+    try {
+      observedWindow = await options.observer.observe({
+        requestId,
+        cutoff,
+        shanghaiDay: shanghaiDay(cutoff),
+        signal,
+      })
+    } catch {
+      return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+    }
+    if (signal.aborted || observedWindow.status === 'incomplete') {
+      return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+    }
+    const candidates = uniqueCandidates(observedWindow.candidates)
+    if (candidates === undefined) return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+    const startRecords = await loadCandidateRecords(candidatesPath)
+    const processed = new Set(startRecords.map(record => record.stableId))
+    for (const candidate of candidates) {
+      if (processed.has(candidate.stableId)) continue
+      let judgment: Awaited<ReturnType<PersonalFeedModel['judgeCandidate']>>
       try {
-        observedWindow = await options.observer.observe({
-          requestId,
+        judgment = await options.model.judgeCandidate({
+          requestText,
+          personalContext,
+          candidate,
           cutoff,
           shanghaiDay: shanghaiDay(cutoff),
           signal,
         })
       } catch {
-        return Object.freeze({ ...pair, status: 'incomplete', stage: 'source_window' })
+        return Object.freeze({ status: 'incomplete', stage: 'judgement_execution' })
       }
-      if (signal.aborted || observedWindow.status === 'incomplete') {
-        return Object.freeze({ ...pair, status: 'incomplete', stage: 'source_window' })
+      if (signal.aborted || judgment.status === 'incomplete') {
+        return Object.freeze({ status: 'incomplete', stage: 'judgement_execution' })
       }
-      const candidates = uniqueCandidates(observedWindow.candidates)
-      if (candidates === undefined) return Object.freeze({ ...pair, status: 'incomplete', stage: 'source_window' })
-      const startRecords = await loadCandidateRecords(candidatesPath)
-      const processed = new Set(startRecords.map(record => record.stableId))
-      for (const candidate of candidates) {
-        if (processed.has(candidate.stableId)) continue
-        let judgment: Awaited<ReturnType<PersonalFeedModel['judgeCandidate']>>
-        try {
-          judgment = await options.model.judgeCandidate({
-            currentText,
-            personalContext,
-            candidate,
-            cutoff,
-            shanghaiDay: shanghaiDay(cutoff),
-            signal,
-          })
-        } catch {
-          return Object.freeze({ ...pair, status: 'incomplete', stage: 'judgement_execution' })
-        }
-        if (signal.aborted || judgment.status === 'incomplete') {
-          return Object.freeze({ ...pair, status: 'incomplete', stage: 'judgement_execution' })
-        }
-        const record: CandidateRecord = {
-          schemaVersion: 1,
-          event: 'candidate_processed',
-          stableId: candidate.stableId,
-          canonicalUrl: candidate.canonicalUrl,
-          judgment: judgment.status,
-          processedAt: validNow(now).toISOString(),
-        }
-        await appendJsonLine(candidatesPath, record)
-        if (judgment.status === 'qualified') return Object.freeze({ ...pair, status: 'one_link', url: candidate.canonicalUrl })
+      const record: CandidateRecord = {
+        schemaVersion: 1,
+        event: 'candidate_processed',
+        stableId: candidate.stableId,
+        canonicalUrl: candidate.canonicalUrl,
+        judgment: judgment.status,
+        processedAt: validNow(now).toISOString(),
       }
-      return Object.freeze({ ...pair, status: 'business_empty' })
-    })
+      await appendJsonLine(candidatesPath, record)
+      if (judgment.status === 'qualified') return Object.freeze({ status: 'one_link', url: candidate.canonicalUrl })
+    }
+    return Object.freeze({ status: 'business_empty' })
   }
 
   const processFeedback = async (input: {

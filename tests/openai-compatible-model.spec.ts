@@ -11,6 +11,69 @@ const config = Object.freeze({
 afterEach(() => vi.unstubAllGlobals())
 
 describe('OpenAI-compatible model boundary', () => {
+  it.each([
+    { status: 'ignored', sufficient: true },
+    { status: 'ignored', sufficient: false },
+    { status: 'applied', changes: { additions: [], replacements: [] }, sufficient: true },
+    { status: 'applied', changes: { additions: [], replacements: [] }, sufficient: false },
+  ])('decodes Feed sufficiency in the same context response: %j', async response => {
+    const currentText = '  I am new to caregiving; give me a Feed.\n'
+    const activeFacts = [{ lane: 'long_term_interest', statement: 'caregiving', stance: 'include' }] as const
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: JSON.stringify(response),
+    } }] })))
+    vi.stubGlobal('fetch', fetch)
+
+    await expect(createOpenAICompatiblePersonalFeedModel(config).observeContext({
+      currentText, activeFacts, assessForFeed: true, signal: new AbortController().signal,
+    })).resolves.toEqual(response)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    const body = JSON.parse(fetch.mock.calls[0]![1]!.body as string)
+    expect(JSON.parse(body.messages[1].content)).toEqual({ currentText, activeFacts, assessForFeed: true })
+  })
+
+  it.each([
+    { status: 'ignored' },
+    { status: 'applied', changes: { additions: [], replacements: [] } },
+    { status: 'ignored', sufficient: 'true' },
+    { status: 'ignored', sufficient: null },
+    { status: 'ignored', sufficient: true, guessed: true },
+    { status: 'incomplete' },
+  ])('does not default missing or invalid Feed sufficiency to true: %j', async response => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: JSON.stringify(response),
+    } }] }))))
+    await expect(createOpenAICompatiblePersonalFeedModel(config).observeContext({
+      currentText: 'Feed', activeFacts: [], assessForFeed: true, signal: new AbortController().signal,
+    })).resolves.toEqual({ status: 'incomplete' })
+  })
+
+  it.each([
+    ['pass', 'pass', 'pass', 'qualified'],
+    ['fail', 'not_reached', 'not_reached', 'not_qualified'],
+    ['pass', 'fail', 'not_reached', 'not_qualified'],
+    ['pass', 'pass', 'fail', 'not_qualified'],
+    ['pass', 'not_reached', 'not_reached', 'incomplete'],
+    ['pass', 'pass', 'not_reached', 'incomplete'],
+    ['unknown', 'not_reached', 'not_reached', 'incomplete'],
+    ['pass', 'unknown', 'not_reached', 'incomplete'],
+    ['pass', 'pass', 'unknown', 'incomplete'],
+    ['fail', 'pass', 'pass', 'incomplete'],
+    ['pass', 'fail', 'pass', 'incomplete'],
+  ])('decodes only a finished judgment: %s / %s / %s => %s', async (longTermValue, longTermInterestMatch, informationIncrement, status) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: {
+      content: JSON.stringify({ longTermValue, longTermInterestMatch, informationIncrement }),
+    } }] }))))
+    await expect(createOpenAICompatiblePersonalFeedModel(config).judgeCandidate({
+      currentText: 'Feed', personalContext: [],
+      candidate: {
+        stableId: 'x-status:1', canonicalUrl: 'https://x.com/fixture/status/1',
+        body: 'Controlled material', authorHandle: 'fixture', publishedAt: '2026-09-06T00:00:00.000Z',
+      },
+      cutoff: '2026-09-06T00:00:00.000Z', shanghaiDay: '2026-09-06', signal: new AbortController().signal,
+    })).resolves.toEqual({ status })
+  })
+
   it('decodes explicit replacements and withdrawals without converting them to additions', async () => {
     const target = { lane: 'existing_knowledge', statement: 'All editing can be automated', epistemic: 'asserted' } as const
     const changes = {

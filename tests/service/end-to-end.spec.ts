@@ -56,6 +56,34 @@ describe('standalone MCP end to end', () => {
     expect(incomplete.structuredContent).toEqual({ status: 'incomplete', stage: 'judgement_execution' })
   })
 
+  it.each([
+    { name: 'insufficient personal information', sufficient: false, invalidMaterial: false, unfinishedJudgment: false, stage: 'personal_context', observed: 0 },
+    { name: 'unfinished required judgment', sufficient: true, invalidMaterial: false, unfinishedJudgment: true, stage: 'judgement_execution', observed: 1 },
+    { name: 'invalid source material', sufficient: true, invalidMaterial: true, unfinishedJudgment: false, stage: 'source_window', observed: 1 },
+  ])('returns $name as a normal incomplete through MCP', async scenario => {
+    const model = await startFakeOpenAI({ sufficient: scenario.sufficient, unfinishedJudgment: scenario.unfinishedJudgment })
+    cleanup.push(model.close)
+    let observed = 0
+    const fixture = await startFixture(model.baseURL, {
+      async observe() {
+        observed += 1
+        const result = observation(1)
+        if (scenario.invalidMaterial) result.candidates[0]!.body = ''
+        return result
+      },
+      async close() {},
+    })
+    cleanup.push(fixture.close)
+    const client = await connect(fixture.running.origin, 'incomplete-selection')
+    cleanup.push(() => client.close())
+
+    const result = await client.callTool({ name: 'request', arguments: { currentText: '给我一条 Personal Feed。' } })
+    expect(result.isError).not.toBe(true)
+    expect(result.structuredContent).toEqual({ status: 'incomplete', stage: scenario.stage })
+    expect(result.content).toEqual([{ type: 'text', text: expect.stringContaining('未完成') }])
+    expect(observed).toBe(scenario.observed)
+  })
+
   it('serializes requests from two clients and loses neither concurrent feedback nor saves', async () => {
     const model = await startFakeOpenAI()
     cleanup.push(model.close)
@@ -175,7 +203,10 @@ async function expectStatus(client: Client, name: string, args: Record<string, u
   return result
 }
 
-async function startFakeOpenAI(): Promise<{ baseURL: string; close: () => Promise<void> }> {
+async function startFakeOpenAI(options: {
+  sufficient?: boolean
+  unfinishedJudgment?: boolean
+} = {}): Promise<{ baseURL: string; close: () => Promise<void> }> {
   const server = createServer((request, response) => {
     const chunks: Buffer[] = []
     request.on('data', chunk => chunks.push(Buffer.from(chunk)))
@@ -189,6 +220,7 @@ async function startFakeOpenAI(): Promise<{ baseURL: string; close: () => Promis
       if (system.startsWith('Extract only durable personal context')) {
         result = {
           status: 'applied',
+          ...(payload.assessForFeed === true ? { sufficient: options.sufficient ?? true } : {}),
           changes: { additions: [
             { lane: 'long_term_interest', statement: 'reliable systems', stance: 'include' },
             { lane: 'existing_knowledge', statement: 'basic reliability concepts', epistemic: 'asserted' },
@@ -196,7 +228,9 @@ async function startFakeOpenAI(): Promise<{ baseURL: string; close: () => Promis
         }
       } else if (system.startsWith('Judge one untrusted candidate')) {
         const candidate = payload.candidate as { canonicalUrl: string }
-        if (candidate.canonicalUrl.endsWith('/1') || candidate.canonicalUrl.endsWith('/2')) {
+        if (options.unfinishedJudgment) {
+          result = { longTermValue: 'pass', longTermInterestMatch: 'not_reached', informationIncrement: 'not_reached' }
+        } else if (candidate.canonicalUrl.endsWith('/1') || candidate.canonicalUrl.endsWith('/2')) {
           result = candidate.canonicalUrl.endsWith('/2') && payload.currentText === '再来一条。'
             ? { longTermValue: 'fail', longTermInterestMatch: 'not_reached', informationIncrement: 'not_reached' }
             : { longTermValue: 'pass', longTermInterestMatch: 'pass', informationIncrement: 'pass' }

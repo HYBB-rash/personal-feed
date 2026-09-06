@@ -16,8 +16,9 @@ async function fixture(overrides: Partial<{
 }> = {}) {
   const stateDir = await mkdtemp(join(tmpdir(), 'personal-feed-core-'))
   const model: PersonalFeedModel = overrides.model ?? {
-    observeContext: vi.fn(async () => ({
+    observeContext: vi.fn<PersonalFeedModel['observeContext']>(async ({ assessForFeed }) => ({
       status: 'applied' as const,
+      ...(assessForFeed ? { sufficient: true } : {}),
       changes: { additions: [
         { lane: 'long_term_interest' as const, statement: 'agent systems', stance: 'include' as const },
         { lane: 'existing_knowledge' as const, statement: 'I know the basic agent loop', epistemic: 'asserted' as const },
@@ -184,6 +185,7 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
     const model: PersonalFeedModel = {
       observeContext: vi.fn(async () => ({
         status: 'applied',
+        sufficient: true,
         changes: { additions: [{ lane: 'long_term_interest', statement: 'agent systems', stance: 'include' }], replacements: [] },
       })),
       judgeCandidate: vi.fn(async () => ({ status: 'qualified' })),
@@ -210,7 +212,7 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
   it('updates an interest when the user returns to an earlier statement', async () => {
     const { app } = await fixture({ model: {
       observeContext: async ({ currentText, activeFacts }) => {
-        if (currentText === 'Feed') return { status: 'ignored' }
+        if (currentText === 'Feed') return { status: 'ignored', sufficient: true }
         const interest = { lane: 'long_term_interest' as const, statement: 'agents', stance: currentText === '不再关注 agents' ? 'exclude' as const : 'include' as const }
         const previous = activeFacts.find(fact => fact.lane === 'long_term_interest')
         return { status: 'applied', changes: {
@@ -246,7 +248,7 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
       status: candidate.stableId === 'x-status:222' ? 'qualified' as const : 'not_qualified' as const,
     }))
     const model: PersonalFeedModel = {
-      observeContext: vi.fn(async () => ({ status: 'applied', changes: { additions: [
+      observeContext: vi.fn(async () => ({ status: 'applied', sufficient: true, changes: { additions: [
         { lane: 'long_term_interest', statement: 'distributed systems', stance: 'include' },
         { lane: 'existing_knowledge', statement: 'I know consensus basics', epistemic: 'asserted' },
       ], replacements: [] } })),

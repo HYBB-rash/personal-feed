@@ -30,7 +30,9 @@ async function fixture(facts: readonly PersonalContextFact[] = [interest, broad,
   cleanup.push(() => rm(stateDir, { recursive: true, force: true }))
   const path = join(stateDir, 'personal-context.json')
   await writeFile(path, JSON.stringify({ schemaVersion: 1, generation: 7, facts }))
-  const observeContext = vi.fn<PersonalFeedModel['observeContext']>(async () => ({ status: 'ignored' }))
+  const observeContext = vi.fn<PersonalFeedModel['observeContext']>(async ({ assessForFeed }) => ({
+    status: 'ignored', ...(assessForFeed ? { sufficient: true } : {}),
+  }))
   const judgeCandidate = vi.fn<PersonalFeedModel['judgeCandidate']>(async () => ({ status: 'qualified' }))
   const observe = vi.fn(async () => ({ status: 'complete' as const, candidates: [{
     stableId: 'x-status:1', canonicalUrl: 'https://x.com/fixture/status/1',
@@ -46,7 +48,9 @@ async function fixture(facts: readonly PersonalContextFact[] = [interest, broad,
   return {
     app, path, stateDir, observeContext, judgeCandidate, observe,
     read: async () => JSON.parse(await readFile(path, 'utf8')) as { schemaVersion: number; generation: number; facts: PersonalContextFact[] },
-    change: (changes: ContextChanges) => observeContext.mockResolvedValueOnce({ status: 'applied', changes }),
+    change: (changes: ContextChanges) => observeContext.mockImplementationOnce(async ({ assessForFeed }) => ({
+      status: 'applied', changes, ...(assessForFeed ? { sufficient: true } : {}),
+    })),
   }
 }
 

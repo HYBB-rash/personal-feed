@@ -102,6 +102,26 @@ describe('explicit personal-context changes', () => {
     expect((await f.read()).facts).toEqual([interest, broad, other])
   })
 
+  it.each([
+    { additions: [], replacements: [{ target: broad, replacement: [broad, other] }] },
+    { additions: [broad], replacements: [{ target: broad, replacement: [] }] },
+  ])('does not count operations that leave the stored facts unchanged', async changes => {
+    const f = await fixture()
+    f.change(changes)
+    await expect(f.app.observeContext({ currentText: 'Keep those facts.' }))
+      .resolves.toEqual({ status: 'applied', appliedCount: 0 })
+    expect((await f.read()).facts).toEqual(expect.arrayContaining([interest, broad, other]))
+    expect((await f.read()).facts).toHaveLength(3)
+  })
+
+  it('counts only the actual addition when a replacement repeats existing facts', async () => {
+    const f = await fixture()
+    f.change({ additions: [narrow], replacements: [{ target: broad, replacement: [broad, other] }] })
+    await expect(f.app.observeContext({ currentText: 'Keep those facts and add this separate claim.' }))
+      .resolves.toEqual({ status: 'applied', appliedCount: 1 })
+    expect((await f.read()).facts).toEqual([interest, broad, other, narrow])
+  })
+
   it('splits confirmed and uncertain scopes, counting one target while retaining both', async () => {
     const f = await fixture()
     f.change({ additions: [], replacements: [{ target: broad, replacement: [narrow, doubt] }] })

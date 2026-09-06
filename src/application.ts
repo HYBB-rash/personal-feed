@@ -548,14 +548,12 @@ function applyContextChanges(existing: readonly PersonalContextFact[], changes: 
 } | undefined {
   if (!validContextChanges(changes)) return undefined
   const replacements = new Map<number, readonly PersonalContextFact[]>()
-  let appliedCount = 0
   for (const entry of changes.replacements) {
     const index = existing.findIndex(fact => sameFact(fact, entry.target))
     if (index === -1 || replacements.has(index)) return undefined
     const replacement = distinctFacts(entry.replacement)
     if (replacement === undefined) return undefined
     replacements.set(index, replacement)
-    if (replacement.length !== 1 || !sameFact(replacement[0]!, entry.target)) appliedCount += 1
   }
   const retained = distinctFacts(existing.flatMap((fact, index) => replacements.get(index) ?? [fact]))
   if (retained === undefined) return undefined
@@ -567,8 +565,24 @@ function applyContextChanges(existing: readonly PersonalContextFact[], changes: 
       continue
     }
     facts.set(factKey(fact), fact)
-    appliedCount += 1
   }
+  const finalFacts = [...facts.values()]
+  const newFacts = new Set(finalFacts.filter(fact => !existing.some(old => sameFact(old, fact))).map(factKey))
+  let appliedCount = 0
+  // Count removed or changed targets first, including any new facts in their replacement.
+  for (const [index, replacement] of replacements) {
+    if (finalFacts.some(fact => sameFact(fact, existing[index]!))) continue
+    appliedCount += 1
+    for (const fact of replacement) newFacts.delete(factKey(fact))
+  }
+  // A retained target only changed if its replacement contributes a new fact.
+  for (const [index, replacement] of replacements) {
+    if (!finalFacts.some(fact => sameFact(fact, existing[index]!))) continue
+    if (!replacement.some(fact => newFacts.has(factKey(fact)))) continue
+    appliedCount += 1
+    for (const fact of replacement) newFacts.delete(factKey(fact))
+  }
+  appliedCount += newFacts.size
   return { facts: [...facts.values()].map(fact => Object.freeze({ ...fact })), appliedCount }
 }
 

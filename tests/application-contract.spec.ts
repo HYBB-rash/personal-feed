@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -44,6 +44,46 @@ async function fixture(overrides: Partial<{
 }
 
 describe('PersonalFeedApplication public contract', () => {
+  it.each(['observeContext', 'processFeedback'] as const)('returns incomplete for an unknown association in %s without creating state or interpreting the reply', async operation => {
+    const { app, model, observer, stateDir } = await fixture()
+    try {
+      await app.observeContext({ currentText: '保存已有的明确资料。' })
+      const before = await readFile(join(stateDir, 'personal-context.json'), 'utf8')
+      const files = await readdir(stateDir)
+      vi.mocked(model.observeContext).mockClear()
+
+      const result = await app[operation]({ currentText: '补充回答。', continuationToken: 'A'.repeat(43) })
+      expect(result.status).toBe('incomplete')
+      if (result.status !== 'incomplete') throw new Error('expected incomplete')
+      expect(result.stage).toBe(operation === 'observeContext' ? 'context_observation' : 'feedback_interpretation')
+      expect(await readdir(stateDir)).toEqual(files)
+      expect(await readFile(join(stateDir, 'personal-context.json'), 'utf8')).toBe(before)
+      expect(model.observeContext).not.toHaveBeenCalled()
+      expect(model.interpretFeedback).not.toHaveBeenCalled()
+      expect(model.judgeCandidate).not.toHaveBeenCalled()
+      expect(observer.observe).not.toHaveBeenCalled()
+    } finally {
+      await app.close()
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['observeContext', 'processFeedback'] as const)('keeps malformed association tokens as input errors in %s', async operation => {
+    const { app, model, observer, stateDir } = await fixture()
+    try {
+      await expect(app[operation]({ currentText: '回答。', continuationToken: 'invalid' })).rejects.toMatchObject({
+        name: 'PersonalFeedInputError',
+      })
+      expect(await readdir(stateDir)).toEqual([])
+      expect(model.observeContext).not.toHaveBeenCalled()
+      expect(model.interpretFeedback).not.toHaveBeenCalled()
+      expect(observer.observe).not.toHaveBeenCalled()
+    } finally {
+      await app.close()
+      await rm(stateDir, { recursive: true, force: true })
+    }
+  })
+
   it('observes the current user text once and returns one qualified link', async () => {
     const { app, model, observer } = await fixture()
 
@@ -318,6 +358,15 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
     }))
     const ledger = await readFile(join(stateDir, 'feedback.jsonl'), 'utf8')
     expect(ledger).toContain('https://x.com/example/status/123')
+    const waitingState = await readFile(join(stateDir, 'pending-feedback.json'), 'utf8')
+    vi.mocked(model.interpretFeedback).mockClear()
+    const repeated = await app.processFeedback({ currentText: secondText, continuationToken: first.continuationToken })
+    expect(repeated.status).toBe('incomplete')
+    if (repeated.status !== 'incomplete') throw new Error('expected incomplete')
+    expect(repeated.stage).toBe('feedback_interpretation')
+    expect(model.interpretFeedback).not.toHaveBeenCalled()
+    expect(await readFile(join(stateDir, 'pending-feedback.json'), 'utf8')).toBe(waitingState)
+    expect(await readFile(join(stateDir, 'feedback.jsonl'), 'utf8')).toBe(ledger)
     await app.close()
     expect(observer.close).toHaveBeenCalled()
   })

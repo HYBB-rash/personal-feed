@@ -14,7 +14,12 @@ export const PERSONAL_FEED_TOOL_NAMES = Object.freeze([
 
 const currentText = z.string().min(1).max(100_000)
 const referenceText = z.string().min(1).max(16_000).optional()
-const requestOutput = z.discriminatedUnion('status', [
+const continuationToken = z.string().regex(/^[A-Za-z0-9_-]{43}$/u)
+const questionHandoff = {
+  question: z.string().min(1).optional(),
+  continuationToken: continuationToken.optional(),
+}
+const feedOutput = z.discriminatedUnion('status', [
   z.object({ status: z.literal('one_link'), url: z.string().url() }).strict(),
   z.object({ status: z.literal('business_empty') }).strict(),
   z.object({
@@ -22,23 +27,30 @@ const requestOutput = z.discriminatedUnion('status', [
     stage: z.enum(['context_observation', 'personal_context', 'source_window', 'judgement_execution', 'conflict', 'shutdown']),
   }).strict(),
 ])
+const requestOutput = z.discriminatedUnion('status', [
+  feedOutput.options[0].extend(questionHandoff),
+  feedOutput.options[1].extend(questionHandoff),
+  feedOutput.options[2].extend(questionHandoff),
+]).superRefine(checkQuestionPair)
+const updateHandoff = { ...questionHandoff, feed: feedOutput.optional() }
 const observeOutput = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('applied'), appliedCount: z.number().int().nonnegative() }).strict(),
-  z.object({ status: z.literal('ignored') }).strict(),
-  z.object({ status: z.literal('already_observed') }).strict(),
-  z.object({ status: z.literal('incomplete'), stage: z.enum(['context_observation', 'conflict']) }).strict(),
-])
+  z.object({ status: z.literal('applied'), appliedCount: z.number().int().nonnegative(), ...updateHandoff }).strict(),
+  z.object({ status: z.literal('ignored'), ...updateHandoff }).strict(),
+  z.object({ status: z.literal('already_observed'), ...updateHandoff }).strict(),
+  z.object({ status: z.literal('incomplete'), stage: z.enum(['context_observation', 'conflict']), ...updateHandoff }).strict(),
+]).superRefine(checkQuestionPair)
 const feedbackOutput = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('pass') }).strict(),
-  z.object({ status: z.literal('completed') }).strict(),
-  z.object({ status: z.literal('discarded') }).strict(),
+  z.object({ status: z.literal('pass'), ...updateHandoff }).strict(),
+  z.object({ status: z.literal('completed'), ...updateHandoff }).strict(),
+  z.object({ status: z.literal('discarded'), ...updateHandoff }).strict(),
   z.object({
     status: z.literal('needs_input'),
     question: z.string().min(1),
-    continuationToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/u),
+    continuationToken,
+    feed: feedOutput.optional(),
   }).strict(),
-  z.object({ status: z.literal('incomplete'), stage: z.enum(['feedback_interpretation', 'feedback_commit', 'conflict']) }).strict(),
-])
+  z.object({ status: z.literal('incomplete'), stage: z.enum(['feedback_interpretation', 'feedback_commit', 'conflict']), ...updateHandoff }).strict(),
+]).superRefine(checkQuestionPair)
 const recordOutput = z.discriminatedUnion('status', [
   z.object({ status: z.literal('saved') }).strict(),
   z.object({ status: z.literal('unsaved') }).strict(),
@@ -74,17 +86,20 @@ export function createPersonalFeedMcpServer(options: {
     invoke: (input, context) => options.application.request(input, context),
   })
   register(server, options, 'observe_context', {
-    description: '仅当当前用户原文直接表达长期兴趣或已有认识时观察上下文。',
-    inputSchema: z.object({ currentText }).strict(),
+    description: '观察用户直接表达的长期兴趣、已有认识或个人信息澄清回答；当前问答有 continuationToken 时原样传回，不自行再请求 Feed。',
+    inputSchema: z.object({ currentText, continuationToken: continuationToken.optional() }).strict(),
     outputSchema: observeOutput,
-    invoke: (input, context) => options.application.observeContext(input, context),
+    invoke: (input, context) => options.application.observeContext({
+      currentText: input.currentText,
+      ...(input.continuationToken === undefined ? {} : { continuationToken: input.continuationToken }),
+    }, context),
   })
   register(server, options, 'process_feedback', {
     description: '处理用户对 Feed 的反馈；如果需要追问，原样传回 continuationToken。',
     inputSchema: z.object({
       currentText,
       referenceText,
-      continuationToken: z.string().regex(/^[A-Za-z0-9_-]{43}$/u).optional(),
+      continuationToken: continuationToken.optional(),
     }).strict(),
     outputSchema: feedbackOutput,
     invoke: (input, context) => options.application.processFeedback({
@@ -180,9 +195,27 @@ function register<Input extends Record<string, unknown>>(
   })
 }
 
+function checkQuestionPair(output: { question?: string | undefined; continuationToken?: string | undefined }, context: z.RefinementCtx): void {
+  if ((output.question === undefined) !== (output.continuationToken === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'question and continuationToken must appear together' })
+  }
+}
+
 function humanText(operation: string, status: string, output: Record<string, unknown>): string {
+  const waitingForContext = operation === 'request' && status === 'incomplete'
+    && output.stage === 'personal_context' && typeof output.question === 'string'
+  const parts = [waitingForContext ? 'Personal Feed 正在等待你补充信息。' : resultText(operation, status, output)]
+  if (output.feed !== undefined) {
+    const feed = output.feed as Record<string, unknown>
+    parts.push(resultText('request', String(feed.status), feed))
+  }
+  if (typeof output.question === 'string') parts.push(output.question)
+  return parts.filter(part => part !== '').join('\n')
+}
+
+function resultText(operation: string, status: string, output: Record<string, unknown>): string {
   if (status === 'business_empty') return '暂时没有符合条件的 Personal Feed 内容。'
-  if (status === 'needs_input') return typeof output.question === 'string' ? output.question : '需要你补充信息。'
+  if (status === 'needs_input') return ''
   if (status === 'one_link') return `Personal Feed 已选出一条内容：${String(output.url)}`
   if (status === 'incomplete') return `Personal Feed 在 ${String(output.stage)} 阶段未完成。`
   if (operation === 'list_saved') return `已返回 ${Array.isArray(output.items) ? output.items.length : 0} 条收藏。`

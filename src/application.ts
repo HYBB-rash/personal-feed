@@ -74,21 +74,30 @@ export interface PersonalFeedModel {
   >
 }
 
-export type RequestResult =
+/** A Feed outcome without clarification fields, also used inside update results. */
+export type FeedResult =
   | { readonly status: 'one_link'; readonly url: string }
   | { readonly status: 'business_empty' }
   | { readonly status: 'incomplete'; readonly stage: 'context_observation' | 'personal_context' | 'source_window' | 'judgement_execution' | 'conflict' | 'shutdown' }
 
-export type ObserveContextResult =
+type QuestionHandoff =
+  | { readonly question: string; readonly continuationToken: string }
+  | { readonly question?: never; readonly continuationToken?: never }
+
+export type RequestResult = FeedResult & QuestionHandoff
+
+export type ObserveContextResult = (
   | { readonly status: 'applied'; readonly appliedCount: number }
   | { readonly status: 'ignored' }
   | { readonly status: 'already_observed' }
   | { readonly status: 'incomplete'; readonly stage: 'context_observation' | 'conflict' }
+) & QuestionHandoff & { readonly feed?: FeedResult }
 
-export type ProcessFeedbackResult =
+export type ProcessFeedbackResult = (
   | { readonly status: 'pass' | 'completed' | 'discarded' }
   | { readonly status: 'needs_input'; readonly question: string; readonly continuationToken: string }
   | { readonly status: 'incomplete'; readonly stage: 'feedback_interpretation' | 'feedback_commit' | 'conflict' }
+) & QuestionHandoff & { readonly feed?: FeedResult }
 
 export type RecordFeedbackResult =
   | { readonly status: 'saved' | 'unsaved' | 'already_saved' | 'already_unsaved' }
@@ -102,7 +111,10 @@ export interface SavedItem {
 
 export interface PersonalFeedApplication {
   readonly request: (input: { readonly currentText: string }, options?: CallOptions) => Promise<RequestResult>
-  readonly observeContext: (input: { readonly currentText: string }, options?: CallOptions) => Promise<ObserveContextResult>
+  readonly observeContext: (input: {
+    readonly currentText: string
+    readonly continuationToken?: string
+  }, options?: CallOptions) => Promise<ObserveContextResult>
   readonly processFeedback: (input: {
     readonly currentText: string
     readonly referenceText?: string
@@ -232,9 +244,17 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     })
   }
 
-  const observeContext = async (input: { readonly currentText: string }, call?: CallOptions): Promise<ObserveContextResult> => {
-    validateExact(input, ['currentText'])
-    return observeContextWithSignal(input.currentText, signalFor(call))
+  const observeContext = async (input: {
+    readonly currentText: string
+    readonly continuationToken?: string
+  }, call?: CallOptions): Promise<ObserveContextResult> => {
+    validateExact(input, ['currentText', 'continuationToken'], ['currentText'])
+    const currentText = validateText(input.currentText, 'currentText')
+    const token = optionalToken(input.continuationToken)
+    const signal = signalFor(call)
+    // Personal-context question associations are not implemented yet; never guess an answer's target.
+    if (token !== undefined) return Object.freeze({ status: 'incomplete', stage: 'context_observation' })
+    return observeContextWithSignal(currentText, signal)
   }
 
   const request = async (input: { readonly currentText: string }, call?: CallOptions): Promise<RequestResult> => {
@@ -314,7 +334,7 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     const before = await feedbackQueue.run(async () => loadPending(pendingPath))
     const prior = token === undefined ? undefined : before.entries[token]
     if (token !== undefined && prior === undefined) {
-      return createPending(before, currentText, '请重新提供需要反馈的内容。')
+      return Object.freeze({ status: 'incomplete', stage: 'feedback_interpretation' })
     }
     if (signal.aborted) return Object.freeze({ status: 'incomplete', stage: 'feedback_interpretation' })
     let interpreted: Awaited<ReturnType<PersonalFeedModel['interpretFeedback']>>

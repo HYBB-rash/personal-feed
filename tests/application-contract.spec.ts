@@ -346,8 +346,8 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
       observeContext: vi.fn(async () => ({ status: 'ignored' as const })),
       judgeCandidate: vi.fn(async () => ({ status: 'not_qualified' as const })),
       interpretFeedback: vi.fn(async ({ currentText }) => currentText.trim() === '不喜欢'
-        ? { status: 'needs_input' as const, question: '你指的是哪一条？' }
-        : { status: 'completed' as const, sentiment: 'dislike' as const, targetText: 'https://x.com/example/status/123' }),
+        ? { status: 'needs_input' as const, remaining: { question: '你指的是哪一条，为什么不喜欢？', unresolvedScope: 'target and reason' } }
+        : { status: 'completed' as const, sentiment: 'dislike' as const, targetText: 'https://x.com/example/status/123', reason: '标题夸张', remaining: null }),
     } })
 
     const firstText = '  不喜欢  '
@@ -357,35 +357,35 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
     expect(first.continuationToken).toMatch(/^[A-Za-z0-9_-]{40,}$/u)
     expect(JSON.stringify(first)).not.toMatch(/chat|message|session/iu)
 
-    const secondText = '\n就是这条\t'
+    const secondText = '\n就是这条，标题夸张\t'
     const second = await app.processFeedback({ currentText: secondText, continuationToken: first.continuationToken })
     expect(second).toEqual({ status: 'completed' })
     expect(model.interpretFeedback).toHaveBeenLastCalledWith(expect.objectContaining({
       currentText: secondText,
-      referenceText: firstText,
+      clarification: { originalText: firstText, question: '你指的是哪一条，为什么不喜欢？', unresolvedScope: 'target and reason' },
     }))
     const ledger = await readFile(join(stateDir, 'feedback.jsonl'), 'utf8')
     expect(ledger).toContain('https://x.com/example/status/123')
-    const waitingState = await readFile(join(stateDir, 'pending-feedback.json'), 'utf8')
+    await expect(readFile(join(stateDir, 'pending-feedback.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     vi.mocked(model.interpretFeedback).mockClear()
     const repeated = await app.processFeedback({ currentText: secondText, continuationToken: first.continuationToken })
     expect(repeated.status).toBe('incomplete')
     if (repeated.status !== 'incomplete') throw new Error('expected incomplete')
     expect(repeated.stage).toBe('feedback_interpretation')
     expect(model.interpretFeedback).not.toHaveBeenCalled()
-    expect(await readFile(join(stateDir, 'pending-feedback.json'), 'utf8')).toBe(waitingState)
+    await expect(readFile(join(stateDir, 'pending-feedback.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     expect(await readFile(join(stateDir, 'feedback.jsonl'), 'utf8')).toBe(ledger)
     await app.close()
     expect(observer.close).toHaveBeenCalled()
   })
 
-  it('recovers an appended feedback event without duplicating it after a pending-snapshot failure', async () => {
+  it('recognizes a previously appended continuation event without duplicating it', async () => {
     const { app, stateDir } = await fixture({ model: {
       observeContext: vi.fn(async () => ({ status: 'ignored' as const })),
       judgeCandidate: vi.fn(async () => ({ status: 'not_qualified' as const })),
       interpretFeedback: vi.fn(async ({ currentText }) => currentText === '不喜欢'
-        ? { status: 'needs_input' as const, question: '你指的是哪一条？' }
-        : { status: 'completed' as const, sentiment: 'dislike' as const, targetText: 'https://x.com/example/status/123' }),
+        ? { status: 'needs_input' as const, remaining: { question: '你指的是哪一条，为什么不喜欢？', unresolvedScope: 'target and reason' } }
+        : { status: 'completed' as const, sentiment: 'dislike' as const, targetText: 'https://x.com/example/status/123', reason: '标题夸张', remaining: null }),
     } })
 
     const pending = await app.processFeedback({ currentText: '不喜欢' })
@@ -400,7 +400,7 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
     })}\n`)
 
     await expect(app.processFeedback({
-      currentText: '就是这条',
+      currentText: '就是这条，标题夸张',
       continuationToken: pending.continuationToken,
     })).resolves.toEqual({ status: 'completed' })
     const events = (await readFile(join(stateDir, 'feedback.jsonl'), 'utf8')).trim().split('\n')

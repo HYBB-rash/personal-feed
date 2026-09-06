@@ -144,3 +144,53 @@ describe('OpenAI-compatible model boundary', () => {
     })).resolves.toEqual({ status: 'incomplete' })
   })
 })
+
+const clarification = { originalText: 'That claim is wrong.', referenceText: 'original item', question: 'Which scope?', unresolvedScope: 'scope' }
+const remaining = { question: 'What about the other part?', unresolvedScope: 'other part' }
+const emptyChanges = { additions: [], replacements: [] }
+function wireResponse(response: unknown) {
+  const fetch = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(response) } }] })))
+  vi.stubGlobal('fetch', fetch)
+  return fetch
+}
+it('passes the original expression, reference, question and current facts through both interpretation boundaries', async () => {
+  const contextResponse = { status: 'applied', changes: emptyChanges, remaining }
+  const fetch = wireResponse(contextResponse)
+  const model = createOpenAICompatiblePersonalFeedModel(config)
+  const input = { currentText: 'reply', activeFacts: [], clarification, signal: new AbortController().signal }
+  await expect(model.observeContext(input)).resolves.toEqual(contextResponse)
+  expect(JSON.parse(JSON.parse(fetch.mock.calls[0]![1]!.body as string).messages[1].content)).toEqual({ currentText: 'reply', activeFacts: [], clarification })
+  const feedbackResponse = { status: 'needs_input', changes: emptyChanges, remaining }
+  const feedbackFetch = wireResponse(feedbackResponse)
+  await expect(model.interpretFeedback({ ...input, referenceText: 'original item' })).resolves.toEqual(feedbackResponse)
+  expect(JSON.parse(JSON.parse(feedbackFetch.mock.calls[0]![1]!.body as string).messages[1].content)).toEqual({ currentText: 'reply', activeFacts: [], referenceText: 'original item', clarification })
+})
+it.each([undefined, {}, '', { question: 'q' }, { question: 'q', unresolvedScope: '' }])('rejects missing/invalid continuation resolution: %j', async remaining => {
+  const model = createOpenAICompatiblePersonalFeedModel(config)
+  const input = { currentText: 'reply', activeFacts: [], clarification, signal: new AbortController().signal }
+  wireResponse({ status: 'ignored', ...(remaining === undefined ? {} : { remaining }) })
+  await expect(model.observeContext(input)).resolves.toEqual({ status: 'incomplete' })
+  wireResponse({ status: 'pass', ...(remaining === undefined ? {} : { remaining }) })
+  await expect(model.interpretFeedback(input)).resolves.toEqual({ status: 'incomplete' })
+})
+it('requires a stated dislike reason, and accepts explicit completion without adding facts', async () => {
+  const model = createOpenAICompatiblePersonalFeedModel(config)
+  const input = { currentText: 'dislike', activeFacts: [], signal: new AbortController().signal }
+  wireResponse({ status: 'completed', sentiment: 'dislike', targetText: 'item', remaining: null })
+  await expect(model.interpretFeedback(input)).resolves.toEqual({ status: 'incomplete' })
+  const resolved = { status: 'completed', sentiment: 'dislike', targetText: 'item', reason: 'sensational style', remaining: null }
+  wireResponse(resolved)
+  await expect(model.interpretFeedback(input)).resolves.toEqual(resolved)
+})
+
+it('accepts an explicitly resolved reference for the next question in either interpreter', async () => {
+  const model = createOpenAICompatiblePersonalFeedModel(config)
+  const input = { currentText: 'post A', activeFacts: [], clarification: { originalText: 'dislike it', question: 'Which item?', unresolvedScope: 'target and reason' }, signal: new AbortController().signal }
+  for (const [method, status] of [['observeContext', 'ignored'], ['interpretFeedback', 'needs_input']] as const) {
+    const response = { status, resolvedReferenceText: 'post A', remaining }
+    wireResponse(response)
+    await expect(model[method](input)).resolves.toEqual(response)
+    wireResponse({ ...response, resolvedReferenceText: '' })
+    await expect(model[method](input)).resolves.toEqual({ status: 'incomplete' })
+  }
+})

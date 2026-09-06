@@ -23,7 +23,11 @@ export interface XCandidate {
 
 export type XObservation =
   | { readonly status: 'complete'; readonly candidates: readonly XCandidate[] }
-  | { readonly status: 'incomplete'; readonly stage: 'source_window' }
+  | {
+      readonly status: 'incomplete'
+      readonly stage: 'source_window'
+      readonly reason: 'material_insufficient' | 'partial_observation' | 'observation_failed'
+    }
 
 export interface XObserver {
   readonly observe: (input: {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { appendFile, mkdtemp, readFile } from 'node:fs/promises'
+import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,7 @@ import {
   type PersonalFeedModel,
   type XObserver,
 } from '../src/application.ts'
+import { createPythonXObserver } from '../src/python-x-observer.ts'
 
 async function fixture(overrides: Partial<{
   model: PersonalFeedModel
@@ -65,13 +66,78 @@ describe('PersonalFeedApplication public contract', () => {
     await empty.app.close()
 
     const incomplete = await fixture({ observer: {
-      observe: vi.fn(async () => ({ status: 'incomplete' as const, stage: 'source_window' as const })),
+      observe: vi.fn(async () => ({ status: 'incomplete' as const, stage: 'source_window' as const, reason: 'observation_failed' as const })),
       close: vi.fn(async () => undefined),
     } })
     await expect(incomplete.app.request({ currentText: '我长期关注 agent systems' })).resolves.toEqual({
       status: 'incomplete', stage: 'source_window',
     })
     await incomplete.app.close()
+  })
+
+  it('keeps adapter incompletes out of candidate judgment while allowing a real empty result', async () => {
+    const cases = [
+      {
+        name: 'natural empty',
+        result: {
+          kind: 'complete',
+          surfaces: ['for_you', 'following', 'explore'].map((surface, surfaceOrdinal) => ({
+            kind: 'natural_zero', surface, surfaceOrdinal, startedAt: '2026-09-04T00:00:00.000Z',
+            completedAt: '2026-09-04T00:00:00.000Z', occurrences: [],
+          })),
+        },
+        expected: { status: 'business_empty' },
+      },
+      {
+        name: 'insufficient material',
+        result: {
+          kind: 'complete',
+          surfaces: [
+            {
+              kind: 'complete', surface: 'for_you', surfaceOrdinal: 0,
+              startedAt: '2026-09-04T00:00:00.000Z', completedAt: '2026-09-04T00:00:00.000Z',
+              occurrences: [{
+                sourceUrl: 'https://x.com/example/status/123', authorHandle: 'example',
+                publishedAt: '2026-09-04T00:00:00.000Z', occurrenceOrdinal: 0,
+                capturedAt: '2026-09-04T00:00:00.000Z', body: { kind: 'insufficient', reason: 'empty' },
+              }],
+            },
+            ...['following', 'explore'].map((surface, surfaceOrdinal) => ({
+              kind: 'natural_zero', surface, surfaceOrdinal: surfaceOrdinal + 1,
+              startedAt: '2026-09-04T00:00:00.000Z', completedAt: '2026-09-04T00:00:00.000Z', occurrences: [],
+            })),
+          ],
+        },
+        expected: { status: 'incomplete', stage: 'source_window' },
+      },
+      {
+        name: 'failed material',
+        result: {
+          kind: 'incomplete',
+          surfaces: [
+            { surface: 'for_you', surfaceOrdinal: 0, kind: 'failed' },
+            { surface: 'following', surfaceOrdinal: 1, kind: 'unknown' },
+            { surface: 'explore', surfaceOrdinal: 2, kind: 'failed' },
+          ],
+        },
+        expected: { status: 'incomplete', stage: 'source_window' },
+      },
+    ] as const
+
+    for (const testCase of cases) {
+      const directory = await mkdtemp(join(tmpdir(), 'personal-feed-application-adapter-'))
+      const script = join(directory, 'fake-observer.mjs')
+      await writeFile(script, `
+const request = JSON.parse(process.argv[2]);
+const result = ${JSON.stringify(testCase.result)};
+process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: request.requestId, cutoff: request.cutoff, shanghaiDay: request.shanghaiDay, startedAt: request.cutoff, completedAt: request.cutoff}) + '\\n');
+`)
+      const observer = createPythonXObserver({ pythonBin: process.execPath, observerCliPath: script, timeoutMs: 2_000 })
+      const entry = await fixture({ observer })
+      await expect(entry.app.request({ currentText: '我长期关注 agent systems' })).resolves.toEqual(testCase.expected)
+      expect(entry.model.judgeCandidate).not.toHaveBeenCalled()
+      await entry.app.close()
+    }
   })
 
   it('requires both long-term-interest and existing-knowledge context lanes', async () => {

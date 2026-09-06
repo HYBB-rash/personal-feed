@@ -35,7 +35,7 @@ export function createPythonXObserver(rawOptions: PythonXObserverOptions = {}): 
     readonly shanghaiDay: string
     readonly signal: AbortSignal
   }): Promise<XObservation> => {
-    if (closed || input.signal.aborted) return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+    if (closed || input.signal.aborted) return incomplete('observation_failed')
     const controller = new AbortController()
     active.add(controller)
     const signal = AbortSignal.any([input.signal, controller.signal])
@@ -50,7 +50,7 @@ export function createPythonXObserver(rawOptions: PythonXObserverOptions = {}): 
       const raw = await run(pythonBin, observerCliPath, payload, timeoutMs, signal, rawOptions.stateDir)
       return parseObservation(raw, input)
     } catch {
-      return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+      return incomplete('observation_failed')
     } finally {
       active.delete(controller)
     }
@@ -105,36 +105,83 @@ function parseObservation(raw: string, request: {
 }): XObservation {
   const value: unknown = JSON.parse(raw)
   if (!isRecord(value) || value.schemaVersion !== 1 || value.requestId !== request.requestId
-    || value.cutoff !== request.cutoff || value.shanghaiDay !== request.shanghaiDay) {
-    return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+    || value.cutoff !== request.cutoff || value.shanghaiDay !== request.shanghaiDay
+    || !Array.isArray(value.surfaces)) {
+    return incomplete('observation_failed')
   }
-  if (value.kind !== 'complete' || !Array.isArray(value.surfaces)) {
-    return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+  if (!validSurfaces(value.surfaces, value.kind)) return incomplete('observation_failed')
+  if (value.kind === 'incomplete') {
+    const partial = value.surfaces.some(face => face.kind === 'partial' || face.kind === 'complete' || face.kind === 'natural_zero')
+    return incomplete(partial ? 'partial_observation' : 'observation_failed')
   }
+
   const candidates: XCandidate[] = []
+  let insufficient = false
   for (const face of value.surfaces) {
-    if (!isRecord(face) || !isSurface(face.surface) || !Array.isArray(face.occurrences)) {
-      return Object.freeze({ status: 'incomplete', stage: 'source_window' })
-    }
-    for (const occurrence of face.occurrences) {
-      if (!isRecord(occurrence) || typeof occurrence.sourceUrl !== 'string'
-        || typeof occurrence.authorHandle !== 'string' || typeof occurrence.publishedAt !== 'string'
-        || !isRecord(occurrence.body) || occurrence.body.kind !== 'sufficient' || typeof occurrence.body.text !== 'string') {
-        return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+    if (face.kind === 'natural_zero') continue
+    for (const rawOccurrence of face.occurrences ?? []) {
+      const occurrence = rawOccurrence as Record<string, unknown>
+      const body = occurrence.body as Record<string, unknown>
+      if (body.kind === 'insufficient') {
+        insufficient = true
+        continue
       }
-      const identifier = /^https:\/\/x\.com\/[a-z0-9_]{1,15}\/status\/([1-9]\d*)$/u.exec(occurrence.sourceUrl)?.[1]
-      if (identifier === undefined) return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+      const identifier = /^https:\/\/x\.com\/[a-z0-9_]{1,15}\/status\/([1-9]\d*)$/u.exec(occurrence.sourceUrl as string)?.[1]
       candidates.push(Object.freeze({
         stableId: `x-status:${identifier}`,
-        canonicalUrl: occurrence.sourceUrl,
-        body: occurrence.body.text,
-        authorHandle: occurrence.authorHandle,
-        publishedAt: occurrence.publishedAt,
+        canonicalUrl: occurrence.sourceUrl as string,
+        body: body.text as string,
+        authorHandle: occurrence.authorHandle as string,
+        publishedAt: occurrence.publishedAt as string,
         surface: face.surface,
       }))
     }
   }
-  return Object.freeze({ status: 'complete', candidates: Object.freeze(candidates) })
+  return insufficient ? incomplete('material_insufficient') : Object.freeze({ status: 'complete', candidates: Object.freeze(candidates) })
+}
+
+type ParsedSurface = Record<string, unknown> & {
+  readonly surface: 'for_you' | 'following' | 'explore'
+  readonly surfaceOrdinal: number
+  readonly kind: string
+  readonly occurrences?: readonly unknown[]
+}
+
+function validSurfaces(value: readonly unknown[], overallKind: unknown): value is readonly ParsedSurface[] {
+  if (value.length !== 3 || (overallKind !== 'complete' && overallKind !== 'incomplete')) return false
+  for (const [index, rawFace] of value.entries()) {
+    if (!isRecord(rawFace) || !isSurface(rawFace.surface) || rawFace.surface !== ['for_you', 'following', 'explore'][index]
+      || rawFace.surfaceOrdinal !== index || !Number.isSafeInteger(rawFace.surfaceOrdinal) || typeof rawFace.kind !== 'string') return false
+    if (overallKind === 'incomplete') {
+      if ('occurrences' in rawFace || !['complete', 'natural_zero', 'partial', 'failed', 'unknown'].includes(rawFace.kind)) return false
+      continue
+    }
+    if (!Array.isArray(rawFace.occurrences)) return false
+    if (rawFace.kind !== 'complete' && rawFace.kind !== 'natural_zero') return false
+    if (rawFace.kind === 'natural_zero' && rawFace.occurrences.length !== 0) return false
+    if (rawFace.kind === 'complete' && rawFace.occurrences.length === 0) return false
+    for (const [occurrenceIndex, rawOccurrence] of rawFace.occurrences.entries()) {
+      if (!validOccurrence(rawOccurrence, occurrenceIndex)) return false
+    }
+  }
+  return true
+}
+
+function validOccurrence(value: unknown, index: number): value is Record<string, unknown> {
+  if (!isRecord(value) || value.occurrenceOrdinal !== index || !Number.isSafeInteger(value.occurrenceOrdinal)
+    || typeof value.publishedAt !== 'string'
+    || typeof value.sourceUrl !== 'string' || typeof value.authorHandle !== 'string'
+    || !isRecord(value.body)) return false
+  const match = /^https:\/\/x\.com\/([a-z0-9_]{1,15})\/status\/([1-9]\d*)$/u.exec(value.sourceUrl)
+  if (match === null) return false
+  if (value.body.kind === 'sufficient') {
+    return typeof value.body.text === 'string' && value.body.text.trim() !== ''
+  }
+  return value.body.kind === 'insufficient' && typeof value.body.reason === 'string' && value.body.reason.trim() !== ''
+}
+
+function incomplete(reason: 'material_insufficient' | 'partial_observation' | 'observation_failed'): XObservation {
+  return Object.freeze({ status: 'incomplete', stage: 'source_window', reason })
 }
 
 function isSurface(value: unknown): value is 'for_you' | 'following' | 'explore' {

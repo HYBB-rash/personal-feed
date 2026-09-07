@@ -470,7 +470,10 @@ def observe(deadline_epoch_ms, *, clock, browser, lock, evaluator):
                     tab = candidate
                     break
             if tab is None:
-                raise _BadObservation()
+                tab = browser.create_x_tab(_budget(clock, deadline))
+                _live(clock, deadline)
+                if not isinstance(tab, dict) or not browser.is_x_tab(tab):
+                    raise _BadObservation()
             ws_url = tab.get("webSocketDebuggerUrl")
             if not isinstance(ws_url, str) or not ws_url:
                 raise _BadObservation()

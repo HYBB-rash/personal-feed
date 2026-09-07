@@ -109,12 +109,12 @@ class _ExistingCdpBrowser:
         self.clock = clock
         self.deadline_epoch_ms = deadline_epoch_ms
 
-    def _get_json(self, path, timeout_seconds):
+    def _get_json(self, path, timeout_seconds, *, method="GET"):
         try:
             timeout = _positive_timeout(timeout_seconds)
             request = urllib.request.Request(
                 "http://127.0.0.1:9222" + path,
-                method="GET",
+                method=method,
             )
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 raw = response.read(MAX_HTTP_BYTES + 1)
@@ -131,6 +131,12 @@ class _ExistingCdpBrowser:
     def list_tabs(self, remaining_seconds):
         value = self._get_json("/json/list", remaining_seconds)
         return value if isinstance(value, list) else []
+
+    def create_x_tab(self, remaining_seconds):
+        value = self._get_json("/json/new?https://x.com/home", remaining_seconds, method="PUT")
+        if not self.is_x_tab(value) or not _valid_ws_url(value.get("webSocketDebuggerUrl")):
+            return None
+        return value
 
     def is_x_tab(self, tab):
         if not isinstance(tab, dict) or tab.get("type") != "page":

@@ -1,6 +1,6 @@
 # Personal Feed
 
-Personal Feed is a standalone, single-user MCP service. It observes an already-open, already-authenticated X page, maintains private personal context, feedback records, and saved items, and exposes a small channel-neutral tool API. Telegram, Web, or any other interface may reach it only through an MCP-capable Agent.
+Personal Feed is a standalone, single-user MCP service. It observes X through an already-authenticated browser, maintains private personal context, feedback records, and saved items, and exposes a small channel-neutral tool API. Telegram, Web, or any other interface may reach it only through an MCP-capable Agent.
 
 ```text
 Telegram / Web -> Agent -> generic MCP client -> 127.0.0.1 Personal Feed service
@@ -15,6 +15,7 @@ The repository is the source of truth. It is MIT-licensed, intentionally `privat
 - `GET /healthz` proves only that the process is alive.
 - `GET /readyz` checks loaded configuration, the writable state directory, and readable Python observer assets. It does not contact X or the model endpoint.
 - The existing X browser must expose CDP at `127.0.0.1:9222`. Personal Feed never starts a browser, signs into an account, or exposes CDP.
+- If no usable X timeline tab exists, the observer opens one X home tab in that browser within its observation deadline. Later calls reuse an available timeline tab; existing post-detail tabs are left untouched. A failed page creation remains an incomplete observation.
 - State defaults to `${XDG_STATE_HOME:-$HOME/.local/state}/personal-feed`.
 - MCP authorization and the OpenAI-compatible model use separate secrets. Secrets never belong in Git, URLs, or logs.
 

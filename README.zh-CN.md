@@ -1,6 +1,6 @@
 # Personal Feed
 
-Personal Feed 是一个独立、单用户、与消息通道无关的 MCP 服务。它观察已打开且已登录的 X 页面，在自己的状态目录中维护偏好、反馈和收藏，并向任何具有通用 MCP Client 的 Agent 提供五个工具。
+Personal Feed 是一个独立、单用户、与消息通道无关的 MCP 服务。它通过已登录的浏览器观察 X，在自己的状态目录中维护偏好、反馈和收藏，并向任何具有通用 MCP Client 的 Agent 提供五个工具。
 
 ```text
 Telegram / Web -> Agent -> 通用 MCP Client -> 127.0.0.1 Personal Feed 服务
@@ -15,6 +15,7 @@ Telegram / Web -> Agent -> 通用 MCP Client -> 127.0.0.1 Personal Feed 服务
 - `GET /healthz` 只证明进程活着。
 - `GET /readyz` 只检查配置已加载、状态目录可写、Python observer 资产可读；不访问 X 或模型网络。
 - 现有 X 浏览器需在 `127.0.0.1:9222` 提供 CDP。Personal Feed 不启动浏览器、不管理账号、不对外暴露 CDP。
+- 没有可用的 X 时间线标签页时，采集器会在该浏览器中打开一个 X 首页，计入本次采集时限；后续调用复用可用时间线页面，已有推文详情页保持原样。打开页面失败仍返回采集未完成。
 - 默认状态目录是 `${XDG_STATE_HOME:-$HOME/.local/state}/personal-feed`。
 - MCP token 和模型 API key 是两份独立凭据，不进 Git、URL 和日志。
 

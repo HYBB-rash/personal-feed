@@ -11,7 +11,7 @@ The repository is the source of truth. It is MIT-licensed, intentionally `privat
 ## Runtime boundary
 
 - The service binds only to `127.0.0.1:43180` in v1.
-- `POST /mcp` is stateless Streamable HTTP MCP and requires `Authorization: Bearer ...`.
+- `POST /mcp` uses stateful Streamable HTTP MCP and requires `Authorization: Bearer ...`. Protocol connections exist only in memory; authenticated `DELETE /mcp` releases a connection.
 - `GET /healthz` proves only that the process is alive.
 - `GET /readyz` checks loaded configuration, the writable state directory, and readable Python observer assets. It does not contact X or the model endpoint.
 - The existing X browser must expose CDP at `127.0.0.1:9222`. Personal Feed never starts a browser, signs into an account, or exposes CDP.
@@ -20,6 +20,8 @@ The repository is the source of truth. It is MIT-licensed, intentionally `privat
 - MCP authorization and the OpenAI-compatible model use separate secrets. Secrets never belong in Git, URLs, or logs.
 
 The five raw tool names are `request`, `observe_context`, `process_feedback`, `record_feedback`, and `list_saved`. A client configured with `serverName: personal_feed` exposes them to an Agent as `mcp__personal_feed__<raw-name>`.
+
+The V0 candidate removes the discovery profile gate and preserves trusted partial source material. Individual unreadable items or judgment failures no longer discard later usable recommendations. `one_link` can include `limitations`; show these alongside the original link. Historical processed records no longer permanently exclude candidates, so links may recur across calls. V0 does not yet explore unfamiliar directions: a finished interest pass without a recommendation reports that exploration is not ready, rather than claiming a normal empty discovery.
 
 The exact input schemas, closed result categories, and error boundary are documented in [`docs/MCP.md`](docs/MCP.md).
 
@@ -72,8 +74,10 @@ After the service is running, configure the Agent's generic MCP client:
 | MCP endpoint | `http://127.0.0.1:43180/mcp` |
 | Request header | `Authorization: Bearer <service MCP token>` |
 | Server name | `personal_feed` |
+| Fixed mode header | `Personal-Feed-Mode: interactive` for user interaction; omitted or `background` for read-only Feed requests |
+| Client tool timeout | 360 seconds (service default: 300 seconds, including answering time) |
 
-Load this repository's [`skills/personal-feed`](skills/personal-feed/SKILL.md) through the Agent's own Skill installation mechanism. Users can then request Personal Feed in normal conversation. Configuration field names and credential storage depend on the client; its tool timeout should cover the service's `PERSONAL_FEED_TOOL_TIMEOUT_MS`.
+Load this repository's [`skills/personal-feed`](skills/personal-feed/SKILL.md) through the Agent's own Skill installation mechanism. Users can then request Personal Feed in normal conversation. Configuration field names and credential storage depend on the client; its tool timeout should exceed the service's `PERSONAL_FEED_TOOL_TIMEOUT_MS`. Interactive clients that need clarification for voluntary updates or feedback must support MCP form elicitation and allow it in the task permission policy; ordinary discovery does not require it. The calling program sets the mode header; the model does not select it. Necessary answers return through the pending MCP call, without a second tool call or continuation token. Ordinary `request` uses the current stored facts, including an empty or uncertain context, and immediately observes candidates. It never runs a profile sufficiency interview, stores request text as facts, or waits for answers. Voluntary context updates remain separate `observe_context` calls.
 
 Personal Feed installs only its own service. The former `dsh install` and `dsh rollback` commands have been removed; the host manages its MCP configuration and Skills. Existing integrations remain installed. To undo changes made by the old installer, use the version that produced the backup.
 
@@ -87,4 +91,4 @@ Service rollback restores the unit and configuration and preserves the independe
 
 ## Logs and data
 
-Tool logs contain an operation name, a server-generated anonymous request ID, a result category, and duration. Model failures emit `model_failure` with fixed failure categories, optional fixed schema locations, and an HTTP status when relevant. Application validation emits `application_failure` for invalid changes, missing clarification, failed assessment, conflicts, cancellation, or unusable associations. Logs exclude user messages, model response text, X text, full URLs, continuation tokens, and credentials. Diagnostics neither change tool results nor trigger retries. JSONL writes are synced before success is returned; snapshots use same-directory temporary files and atomic replacement.
+Tool logs contain an operation name, a server-generated anonymous request ID, a result category, and duration. Model failures emit `model_failure` with fixed failure categories, optional fixed schema locations, and an HTTP status when relevant. Application validation emits `application_failure` for invalid changes, missing clarification, failed assessment, conflicts, or cancellation. Logs exclude user messages, model response text, X text, full URLs, continuation tokens, and credentials. Diagnostics neither change tool results nor trigger retries. JSONL writes are synced before success is returned; snapshots use same-directory temporary files and atomic replacement.

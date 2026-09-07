@@ -4,6 +4,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { expect, it } from 'vitest'
 
 it('writes safe model diagnostics from the real serve entry while preserving the MCP result', async () => {
@@ -22,11 +24,18 @@ it('writes safe model diagnostics from the real serve entry while preserving the
   const port = (reservation.address() as { port: number }).port
   await new Promise<void>(resolve => reservation.close(() => resolve()))
   const observer = join(root, 'observer.py')
-  await writeFile(observer, 'raise RuntimeError("observer must not run")\n')
+  await writeFile(observer, `import json, sys
+r = json.loads(sys.argv[1]); t = r["cutoff"]
+item = {"sourceUrl":"https://x.com/fixture/status/1","authorHandle":"fixture","publishedAt":t,"occurrenceOrdinal":0,"capturedAt":t,"body":{"kind":"sufficient","text":"controlled body"}}
+faces = [{"surface":"for_you","surfaceOrdinal":0,"kind":"complete","startedAt":t,"completedAt":t,"occurrences":[item]}] + [{"surface":s,"surfaceOrdinal":i,"kind":"natural_zero","startedAt":t,"completedAt":t,"occurrences":[]} for i,s in enumerate(["following","explore"], 1)]
+print(json.dumps({"schemaVersion":1,"requestId":r["requestId"],"cutoff":t,"shanghaiDay":r["shanghaiDay"],"kind":"complete","startedAt":t,"completedAt":t,"surfaces":faces}))
+`)
   const token = 'fixture-mcp-token-1234567890'
   const child = spawn(process.execPath, [resolve('src/cli.ts'), 'serve'], {
     env: {
       HOME: root,
+      PATH: process.env.PATH,
+      LANG: 'C.UTF-8',
       PERSONAL_FEED_STATE_DIR: join(root, 'state'),
       PERSONAL_FEED_PORT: String(port),
       PERSONAL_FEED_MCP_TOKEN: token,
@@ -49,17 +58,17 @@ it('writes safe model diagnostics from the real serve entry while preserving the
       if (!ready) await new Promise(resolve => setTimeout(resolve, 20))
     }
     expect(ready).toBe(true)
-    const response = await fetch(`${origin}/mcp`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'request', arguments: { currentText: secret } } }),
-    })
-    const text = await response.text()
-    const wire = JSON.parse(text.startsWith('event:') ? text.split('\n').find(line => line.startsWith('data: '))!.slice(6) : text)
-    expect(wire.result.isError).not.toBe(true)
-    expect(wire.result.structuredContent).toEqual({ status: 'incomplete', stage: 'context_observation' })
+    const client = new Client({ name: 'diagnostics', version: '1' })
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
+      requestInit: { headers: { authorization: `Bearer ${token}`, 'Personal-Feed-Mode': 'interactive' } },
+    }))
+    try {
+      const result = await client.callTool({ name: 'request', arguments: { currentText: secret } })
+      expect(result.isError).not.toBe(true)
+      expect(result.structuredContent).toEqual({ status: 'incomplete', stage: 'judgement_execution' })
+    } finally { await client.close() }
     const events = stderr.split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line))
-    expect(events).toContainEqual({ event: 'model_failure', operation: 'observe_context', reason: 'http_status', httpStatus: 422 })
+    expect(events).toContainEqual({ event: 'model_failure', operation: 'judge_candidate', reason: 'http_status', httpStatus: 422 })
     expect(stderr).not.toContain(secret)
     expect(stderr).not.toContain(token)
     expect(stderr).not.toContain(origin)

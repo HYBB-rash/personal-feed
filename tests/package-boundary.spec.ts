@@ -9,7 +9,6 @@ const forbiddenRuntimeReferences = [
   /DSH_HOME/u,
   /chatId/u,
   /messageId/u,
-  /sessionId/u,
   /@deepseek-ai/iu,
   /@herman/iu,
 ]
@@ -34,6 +33,9 @@ describe('standalone package boundary', () => {
       for (const forbidden of forbiddenRuntimeReferences) {
         expect(contents, `${file} contains ${forbidden}`).not.toMatch(forbidden)
       }
+      // MCP's own connection identifier is confined to its HTTP adapter. It
+      // cannot become an application identity or a host-session dependency.
+      if (file !== 'src/service/server.ts') expect(contents, file).not.toMatch(/sessionId/u)
     }
   })
 })

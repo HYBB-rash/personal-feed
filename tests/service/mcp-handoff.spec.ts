@@ -9,7 +9,7 @@ const question = '还有哪个适用范围需要澄清？'
 const url = 'https://x.com/example/status/123'
 const questionPair = { question, continuationToken }
 
-describe('D01 MCP handoff boundary with a controlled application', () => {
+describe('MCP closed-result boundary with a controlled application', () => {
   const cleanup: Array<() => Promise<void>> = []
   afterEach(async () => {
     for (const close of cleanup.splice(0).reverse()) await close()
@@ -36,167 +36,68 @@ describe('D01 MCP handoff boundary with a controlled application', () => {
     return { client, application, events }
   }
 
-  it('carries a Feed question and the exact subsequent reply through the context tool without a new request', async () => {
-    const { client, application, events } = await fixture()
-    application.request.mockResolvedValueOnce({ status: 'incomplete', stage: 'personal_context', ...questionPair })
-    application.observeContext.mockResolvedValueOnce({ status: 'ignored', ...questionPair })
-
-    const first = await client.callTool({ name: 'request', arguments: { currentText: '给我一次 Feed。' } })
-    expect(first.isError).not.toBe(true)
-    expect(first.structuredContent).toEqual({ status: 'incomplete', stage: 'personal_context', ...questionPair })
-    expect(readable(first)).toContain('等待')
-    expect(readable(first)).toContain(question)
-    expect(readable(first)).not.toContain(continuationToken)
-
-    const currentText = '\n  这一点我还没有想清楚。\t'
-    const reply = await client.callTool({ name: 'observe_context', arguments: { currentText, continuationToken } })
-    expect(reply.isError).not.toBe(true)
-    expect(reply.structuredContent).toEqual({ status: 'ignored', ...questionPair })
-    expect(readable(reply)).toContain(question)
-    expect(application.observeContext).toHaveBeenCalledWith(
-      { currentText, continuationToken }, expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    )
-    expect(application.request).toHaveBeenCalledTimes(1)
-    expect(application.processFeedback).not.toHaveBeenCalled()
-    expect(JSON.stringify(events)).not.toContain(currentText)
-    expect(JSON.stringify(events)).not.toContain(question)
-    expect(JSON.stringify(events)).not.toContain(continuationToken)
-  })
-
   it.each([
-    { status: 'one_link', url },
-    { status: 'business_empty' },
-    { status: 'incomplete', stage: 'source_window' },
-  ] as const)('keeps the request result and remaining question visible for $status', async outcome => {
+    ['request', 'personal_context'],
+    ['request', 'context_observation'],
+    ['observeContext', 'context_observation'],
+    ['processFeedback', 'feedback_interpretation'],
+  ] as const)('preserves controlled interaction reasons for %s / %s', async (operation, stage) => {
     const { client, application } = await fixture()
-    application.request.mockResolvedValueOnce({ ...outcome, ...questionPair })
-    const result = await client.callTool({ name: 'request', arguments: { currentText: '给我 Feed。' } })
-    expect(result.isError).not.toBe(true)
-    expect(result.structuredContent).toEqual({ ...outcome, ...questionPair })
-    expect(readable(result)).toContain(question)
-    expect(readable(result)).toContain(outcome.status === 'one_link' ? url
-      : outcome.status === 'business_empty' ? '暂时没有' : '来源观察未完成')
-    expect(readable(result)).not.toContain(continuationToken)
+    for (const reason of ['interaction_unavailable', 'interaction_declined', 'interaction_cancelled', 'interaction_timeout']) {
+      application[operation].mockResolvedValueOnce({ status: 'incomplete', stage, reason } as never)
+      const name = operation === 'observeContext' ? 'observe_context' : operation === 'processFeedback' ? 'process_feedback' : 'request'
+      const result = await client.callTool({ name, arguments: { currentText: '输入' } })
+      expect(result.isError).not.toBe(true)
+      expect(result.structuredContent).toEqual({ status: 'incomplete', stage, reason })
+      expect(readable(result)).not.toContain('用户拒绝')
+    }
   })
-
-  it.each([
-    { status: 'applied', appliedCount: 1 },
-    { status: 'ignored' },
-    { status: 'already_observed' },
-    { status: 'incomplete', stage: 'context_observation' },
-  ] as const)('preserves a context result with both a question and an actual Feed result for $status', async outcome => {
-    const { client, application, events } = await fixture()
-    const feed = { status: 'one_link', url } as const
-    application.observeContext.mockResolvedValueOnce({ ...outcome, ...questionPair, feed })
-    const result = await client.callTool({ name: 'observe_context', arguments: { currentText: '补充资料。' } })
-    expect(result.isError).not.toBe(true)
-    expect(result.structuredContent).toEqual({ ...outcome, ...questionPair, feed })
-    expect(readable(result)).toContain(question)
-    expect(readable(result)).toContain(url)
-    expect(readable(result)).not.toContain(continuationToken)
-    expect(application.request).not.toHaveBeenCalled()
-    expect(JSON.stringify(events)).not.toContain(url)
-    expect(JSON.stringify(events)).not.toContain(continuationToken)
-  })
-
-  it.each([
-    { status: 'one_link', url },
-    { status: 'business_empty' },
-    { status: 'incomplete', stage: 'source_window', reason: 'material_insufficient' },
-  ] as const)('distinguishes an executed Feed from the remaining optional context question for $status', async feed => {
-    const { client, application } = await fixture()
-    const outcome = { status: 'applied', appliedCount: 1, ...questionPair, feed } as const
-    application.observeContext.mockResolvedValueOnce(outcome)
-    const result = await client.callTool({ name: 'observe_context', arguments: { currentText: '补充资料。', continuationToken } })
-    expect(result.isError).not.toBe(true)
-    expect(result.structuredContent).toEqual(outcome)
-    const text = readable(result)
-    expect(text).toContain('原请求已继续执行')
-    expect(text).toContain('仍可补充的问题')
-    expect(text).toContain('继续回答不会重复执行本次 Feed')
-    expect(text).toContain(question)
-    expect(text).not.toContain('正在等待你补充信息')
-    expect(text).not.toContain(continuationToken)
-    if (feed.status === 'incomplete') expect(text).toContain('来源正文不足，无法完成判断')
-    expect(application.request).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    { status: 'business_empty' },
-    { status: 'incomplete', stage: 'source_window' },
-    { status: 'incomplete', stage: 'judgement_execution' },
-  ] as const)('does not hide a resumed $status result behind a successful update', async feed => {
-    const { client, application } = await fixture()
-    application.observeContext.mockResolvedValueOnce({ status: 'applied', appliedCount: 1, feed })
-    const result = await client.callTool({ name: 'observe_context', arguments: { currentText: '补充资料。' } })
-    expect(result.isError).not.toBe(true)
-    expect(result.structuredContent).toEqual({ status: 'applied', appliedCount: 1, feed })
-    expect(readable(result)).toContain('applied')
-    expect(readable(result)).toContain(feed.status === 'business_empty' ? '暂时没有' : feed.stage === 'source_window' ? '来源观察未完成' : '对内容是否符合条件的判断未完成')
-    expect(application.request).not.toHaveBeenCalled()
-  })
-
-  it.each([
-    { status: 'pass' },
-    { status: 'completed' },
-    { status: 'discarded' },
-    { status: 'needs_input' },
-    { status: 'incomplete', stage: 'feedback_interpretation' },
-  ] as const)('preserves feedback $status, the remaining question, and the actual Feed result', async outcome => {
-    const { client, application } = await fixture()
-    const feed = { status: 'business_empty' } as const
-    application.processFeedback.mockResolvedValueOnce({ ...outcome, ...questionPair, feed })
-    const input = { currentText: '\n 不喜欢这种表达。 ', referenceText: '当前明确引用', continuationToken }
-    const result = await client.callTool({ name: 'process_feedback', arguments: input })
-    expect(result.isError).not.toBe(true)
-    expect(result.structuredContent).toEqual({ ...outcome, ...questionPair, feed })
-    expect(readable(result)).toContain(question)
-    expect(readable(result)).toContain('暂时没有')
-    expect(readable(result).split(question)).toHaveLength(2)
-    expect(readable(result)).not.toContain(continuationToken)
-    expect(application.processFeedback).toHaveBeenCalledWith(input, expect.objectContaining({ signal: expect.any(AbortSignal) }))
-    expect(application.request).not.toHaveBeenCalled()
-    expect(application.observeContext).not.toHaveBeenCalled()
-  })
-
   it.each([
     ['observation_failed', '获取来源失败'],
     ['partial_observation', '仅完成部分来源观察'],
     ['material_insufficient', '来源正文不足'],
-  ] as const)('preserves source reason %s at the top level and in a resumed Feed', async (reason, message) => {
+  ] as const)('preserves source reason %s', async (reason, text) => {
     const { client, application } = await fixture()
-    const feed = { status: 'incomplete', stage: 'source_window', reason } as const
-    application.request.mockResolvedValueOnce(feed)
-    application.observeContext.mockResolvedValueOnce({ status: 'applied', appliedCount: 1, feed })
-    application.processFeedback.mockResolvedValueOnce({ status: 'completed', feed })
-    for (const name of ['request', 'observe_context', 'process_feedback']) {
-      const result = await client.callTool({ name, arguments: { currentText: '请求或补充。' } })
-      expect(result.isError).not.toBe(true)
-      expect(result.structuredContent).toEqual(name === 'request' ? feed : name === 'observe_context' ? { status: 'applied', appliedCount: 1, feed } : { status: 'completed', feed })
-      expect(readable(result)).toContain(message)
-      expect(readable(result)).not.toContain(reason)
-      expect(readable(result)).not.toContain('暂时没有')
-    }
-  })
-
-  it.each(['observe_context', 'process_feedback'] as const)('marks a retained old question after an unsuccessful reply in %s', async name => {
-    const { client, application } = await fixture()
-    if (name === 'observe_context') application.observeContext.mockResolvedValueOnce({ status: 'incomplete', stage: 'context_observation', ...questionPair })
-    else application.processFeedback.mockResolvedValueOnce({ status: 'incomplete', stage: 'feedback_interpretation', ...questionPair })
-    const result = await client.callTool({ name, arguments: { currentText: '本次回答。', continuationToken } })
+    application.request.mockResolvedValueOnce({ status: 'incomplete', stage: 'source_window', reason })
+    const result = await client.callTool({ name: 'request', arguments: { currentText: '输入' } })
     expect(result.isError).not.toBe(true)
-    expect(readable(result)).toContain('这次回答尚未处理成功')
-    expect(readable(result)).toContain(`上次保留的问题：${question}`)
-    expect(readable(result)).not.toContain(continuationToken)
+    expect(readable(result)).toContain(text)
   })
 
+  it('preserves every local limitation beside a usable link', async () => {
+    const { client, application } = await fixture()
+    application.request.mockResolvedValueOnce({
+      status: 'one_link',
+      url,
+      limitations: ['partial_observation', 'material_insufficient', 'judgement_incomplete'],
+    } as never)
+
+    const result = await client.callTool({ name: 'request', arguments: { currentText: '输入' } })
+    expect(result.isError).not.toBe(true)
+    expect(result.structuredContent).toEqual({
+      status: 'one_link',
+      url,
+      limitations: ['partial_observation', 'material_insufficient', 'judgement_incomplete'],
+    })
+    expect(readable(result)).toContain('部分来源')
+    expect(readable(result)).toContain('部分正文不足')
+    expect(readable(result)).toContain('部分内容判断未完成')
+    expect(readable(result)).not.toContain('partial_observation')
+  })
+  it('retains the needs_input category without cross-call tokens', async () => {
+    const { client, application } = await fixture()
+    application.processFeedback.mockResolvedValueOnce({ status: 'needs_input', question })
+    const result = await client.callTool({ name: 'process_feedback', arguments: { currentText: '输入' } })
+    expect(result.isError).not.toBe(true)
+    expect(result.structuredContent).toEqual({ status: 'needs_input', question })
+  })
   it.each([
-    ['request', 'context_observation', '对本次信息的理解未完成'],
+    ['request', 'context_observation' , '对本次信息的理解未完成'],
     ['request', 'personal_context', '个人信息准备未完成'],
     ['request', 'source_window', '来源观察未完成'],
     ['request', 'judgement_execution', '对内容是否符合条件的判断未完成'],
     ['request', 'conflict', '信息状态发生冲突，本次处理未完成'],
-    ['request', 'shutdown', '服务正在停止，本次处理未完成'],
+    ['request', 'shutdown', '本次请求已中止，处理未完成'],
     ['process_feedback', 'feedback_interpretation', '对本次反馈的理解未完成'],
     ['process_feedback', 'feedback_commit', '对本次反馈的保存未完成'],
   ] as const)('explains incomplete %s / %s in Chinese without exposing the internal stage', async (name, stage, message) => {
@@ -225,6 +126,69 @@ describe('D01 MCP handoff boundary with a controlled application', () => {
     expect(incomplete.isError).not.toBe(true)
     expect(readable(incomplete)).toContain('未完成')
     expect(readable(incomplete)).not.toContain('等待')
+  })
+
+  it.each([
+    ['request', 'request', { currentText: '请求。' }, 'shutdown'],
+    ['observe_context', 'observeContext', { currentText: '补充。' }, 'context_observation'],
+    ['process_feedback', 'processFeedback', { currentText: '反馈。' }, 'feedback_interpretation'],
+  ] as const)('returns a normal incomplete when %s reaches its local tool deadline', async (name, operation, input, stage) => {
+    const application = {
+      request: vi.fn<PersonalFeedApplicationPort['request']>(async () => new Promise<never>(() => {})),
+      observeContext: vi.fn<PersonalFeedApplicationPort['observeContext']>(async () => new Promise<never>(() => {})),
+      processFeedback: vi.fn<PersonalFeedApplicationPort['processFeedback']>(async () => new Promise<never>(() => {})),
+      recordFeedback: vi.fn<PersonalFeedApplicationPort['recordFeedback']>(async () => ({ status: 'saved' })),
+      listSaved: vi.fn<PersonalFeedApplicationPort['listSaved']>(async () => ({ status: 'completed', items: [] })),
+    }
+    const server = createPersonalFeedMcpServer({ application, toolTimeoutMs: 10, track: async task => task })
+    const client = new Client({ name: 'deadline-test', version: '1' })
+    cleanup.push(() => server.close(), () => client.close())
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair()
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+
+    const result = await client.callTool({ name, arguments: input }, undefined, { timeout: 500 })
+    expect(result.isError).not.toBe(true)
+    expect(result.structuredContent).toEqual({ status: 'incomplete', stage, reason: 'interaction_timeout' })
+    expect(readable(result)).toContain('超时')
+  })
+
+  it.each([
+    ['request', 'request', { currentText: '请求。' }, 'shutdown'],
+    ['observe_context', 'observeContext', { currentText: '补充。' }, 'context_observation'],
+    ['process_feedback', 'processFeedback', { currentText: '反馈。' }, 'feedback_interpretation'],
+  ] as const)('maps an unclassified %s implementation fault to its normal incomplete stage', async (name, operation, input, stage) => {
+    const { client, application } = await fixture()
+    application[operation].mockRejectedValueOnce(new Error('controlled implementation fault'))
+    const result = await client.callTool({ name, arguments: input })
+    expect(result.isError).not.toBe(true)
+    expect(result.structuredContent).toEqual({ status: 'incomplete', stage })
+    expect(readable(result)).toContain('未完成')
+  })
+
+  it.each([
+    ['record_feedback', { operation: 'save', url }, { status: 'saved' }],
+    ['list_saved', {}, { status: 'completed', items: [] }],
+  ] as const)('keeps a successful %s result when the diagnostic sink throws', async (name, input, expected) => {
+    const throwing = createPersonalFeedMcpServer({
+      application: {
+        request: async () => ({ status: 'business_empty' }),
+        observeContext: async () => ({ status: 'ignored' }),
+        processFeedback: async () => ({ status: 'pass' }),
+        recordFeedback: async () => ({ status: 'saved' }),
+        listSaved: async () => ({ status: 'completed', items: [] }),
+      },
+      toolTimeoutMs: 1_000,
+      track: async task => task,
+      logger: () => { throw new Error('controlled diagnostic failure') },
+    })
+    const throwingClient = new Client({ name: 'throwing-log-test', version: '1' })
+    cleanup.push(() => throwing.close(), () => throwingClient.close())
+    const [serverTransport, clientTransport] = InMemoryTransport.createLinkedPair()
+    await Promise.all([throwing.connect(serverTransport), throwingClient.connect(clientTransport)])
+
+    const result = await throwingClient.callTool({ name, arguments: input })
+    expect(result.isError).not.toBe(true)
+    expect(result.structuredContent).toEqual(expected)
   })
 
   it.each([
@@ -260,12 +224,11 @@ describe('D01 MCP handoff boundary with a controlled application', () => {
     ['observeContext', 'unknown Feed stage', { status: 'ignored', feed: { status: 'incomplete', stage: 'invented' } }],
     ['observeContext', 'new Feed status', { status: 'ignored', feed: { status: 'resumed' } }],
     ['processFeedback', 'missing needs_input pair', { status: 'needs_input' }],
-    ['processFeedback', 'missing needs_input token', { status: 'needs_input', question }],
     ['processFeedback', 'question without token', { status: 'completed', question }],
     ['processFeedback', 'token without question', { status: 'completed', continuationToken }],
     ['recordFeedback', 'question on save', { status: 'saved', ...questionPair }],
     ['listSaved', 'Feed on saved list', { status: 'completed', items: [], feed: { status: 'business_empty' } }],
-  ] as const)('rejects malformed output from %s: %s', async (operation, _reason, output) => {
+  ] as const)('contains malformed output from %s: %s', async (operation, _reason, output) => {
     const { client, application } = await fixture()
     application[operation].mockResolvedValueOnce(output as never)
     const calls = {
@@ -276,8 +239,16 @@ describe('D01 MCP handoff boundary with a controlled application', () => {
       listSaved: { name: 'list_saved', arguments: {} },
     }
     const result = await client.callTool(calls[operation])
-    expect(result.isError).toBe(true)
-    expect(result.structuredContent).toBeUndefined()
+    if (operation === 'request' || operation === 'observeContext' || operation === 'processFeedback') {
+      expect(result.isError).not.toBe(true)
+      expect(result.structuredContent).toEqual({
+        status: 'incomplete',
+        stage: operation === 'request' ? 'shutdown' : operation === 'observeContext' ? 'context_observation' : 'feedback_interpretation',
+      })
+    } else {
+      expect(result.isError).toBe(true)
+      expect(result.structuredContent).toBeUndefined()
+    }
     expect(readable(result)).not.toContain(continuationToken)
     expect(readable(result)).not.toContain('暂时没有')
   })

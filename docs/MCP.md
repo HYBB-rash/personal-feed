@@ -1,73 +1,61 @@
 # Personal Feed MCP contract
 
-客户端用 `serverName: personal_feed` 连接后，模型看到的工具名为 `mcp__personal_feed__<raw-name>`。每次成功调用同时返回一段供 Agent 阅读的文本和严格的 `structuredContent`；以下表格中的字段之外不允许出现额外字段。
+客户端使用 `serverName: personal_feed`。五个工具名称和顶层业务结果类别保持稳定；所有输入与结果均为封闭 schema。`currentText` 必须是当前用户原文，不归纳、不拼接历史。
 
-`currentText` 必须是当前用户消息原文。服务只校验它，不替调用方归纳、改写或拼接会话历史。服务生成自己的匿名请求 ID，不接受 `chatId`、`messageId`、session identity 或其他通道身份。
-
-| Raw tool | Input | `structuredContent` |
+| Raw tool | Input | Result |
 |---|---|---|
-| `request` | `{currentText}` | `{status:"one_link",url}`、`{status:"business_empty"}`，或 `{status:"incomplete",stage}`；stage 只能是 `context_observation`、`personal_context`、`source_window`、`judgement_execution`、`conflict`、`shutdown` |
-| `observe_context` | `{currentText, continuationToken?}` | `{status:"applied",appliedCount}`、`{status:"ignored"}`、`{status:"already_observed"}`，或 `{status:"incomplete",stage}`；stage 只能是 `context_observation`、`conflict` |
-| `process_feedback` | `{currentText, referenceText?, continuationToken?}` | `{status:"pass"}`、`{status:"completed"}`、`{status:"discarded"}`、`{status:"needs_input",question,continuationToken}`，或 `{status:"incomplete",stage}`；stage 只能是 `feedback_interpretation`、`feedback_commit`、`conflict` |
-| `record_feedback` | `{operation:"save"|"unsave",url,title?,note?}` | `{status:"saved"}`、`{status:"unsaved"}`、`{status:"already_saved"}` 或 `{status:"already_unsaved"}` |
-| `list_saved` | `{limit?}`，默认 20，服务入口最大 100 | `{status:"completed",items:[{url,title?,note?,savedAt}]}` |
+| `request` | `{currentText}` | `one_link` + `url` + 可选 `limitations`、`business_empty`、`incomplete` + `stage` |
+| `observe_context` | `{currentText}` | `applied` + `appliedCount`、`ignored`、`already_observed`、`incomplete` + `stage` |
+| `process_feedback` | `{currentText, referenceText?}` | `pass`、`completed`、`discarded`、`needs_input` + `question`、`incomplete` + `stage` |
+| `record_feedback` | `{operation:"save"|"unsave",url,title?,note?}` | `saved`、`unsaved`、`already_saved`、`already_unsaved` |
+| `list_saved` | `{limit?}`，默认 20，最大 100 | `completed` + `items:[{url,title?,note?,savedAt}]` |
 
-## 问题和 Feed 结果的字段增量
+`request` 阶段：`context_observation`、`personal_context`、`source_window`、`judgement_execution`、`conflict`、`shutdown`。`observe_context` 阶段：`context_observation`、`conflict`。`process_feedback` 阶段：`feedback_interpretation`、`feedback_commit`、`conflict`。
 
-上述顶层类别和阶段保持不变，另允许以下字段；其他额外字段仍不合法。
+## 调用模式与问答
 
-| 位置 | 字段 | 约束 |
-|---|---|---|
-| `request`、`observe_context`、`process_feedback` 的业务结果 | `question?`、`continuationToken?` | 必须同时出现或同时省略；`question` 是非空字符串。`process_feedback.needs_input` 仍必须带齐这两个字段 |
-| `observe_context`、`process_feedback` 的业务结果 | `feed?` | 表示应用在这次更新之后实际继续原 Feed 得到的结果；未尝试续做时省略 |
-| 顶层或嵌套 Feed 的 `incomplete/source_window` | `reason?` | 仅允许 `observation_failed`、`partial_observation`、`material_insufficient`，分别表示获取失败、部分观察、材料不足；其他阶段和结果不接受该字段 |
-| `request` 输入、`record_feedback`、`list_saved` | 无增量 | `request` 不接受续答标记，收藏工具不承载问题或 Feed |
+调用程序通过固定 HTTP 头 `Personal-Feed-Mode` 设置 `background` 或 `interactive`；省略即 `background`。这不是工具参数，不能由模型自行决定。其他值为非法输入。
 
-`feed` 只允许以下三种严格形状：
+普通 `request` 在两种模式下都读取当前可用个人了解并直接发现，空了解或 uncertain 认识均合法；不做充分性评估、不启动画像问答，也不把请求模板保存为个人事实。用户主动表达的更新由独立 `observe_context` 保存，后续请求才读取更新后的依据。
 
-```ts
-{ status: 'one_link', url: string }
-{ status: 'business_empty' }
-{ status: 'incomplete', stage: 'source_window', reason?: 'observation_failed' | 'partial_observation' | 'material_insufficient' }
-{ status: 'incomplete', stage: 'context_observation' | 'personal_context' | 'judgement_execution' | 'conflict' | 'shutdown' }
-```
+交互模式只为有必要澄清的独立更新／反馈提供 MCP `elicitation/create` form。客户端将 `answer` 原文交回当前调用；普通 `observe_context` 或 `process_feedback` 不额外生成 Feed。已完成业务不因非阻塞的剩余问题延长等待。
 
-嵌套 `feed` 不允许问题、token 或下一层 `feed`。剩余问题只放外层，问题与 Feed 结果可以同时出现；接入同时呈现两者，不把更新成功误解成 Feed 成功，也不把仍有问题误解成没有 Feed 结果。`request` 使用自己的顶层 Feed 结果，不嵌套 `feed`。
+需要更新／反馈表单的客户端须声明 form elicitation 能力并允许此类交互；普通发现无此要求。表单使用 `relatedRequestId` 绑定发起它的工具调用，等待发生在业务队列之外。客户端只负责显示表单、回传原文，不通过新的 `observe_context` 或 `process_feedback` 调用来提交表单答案。
 
-例如，下列是用于接入验证的受控应用返回，表达“更新已提交，续做因来源失败未完成，而且仍有问题”：
+公开输入和输出不再接受 `continuationToken`，也不携带嵌套 `feed`；旧标记没有兼容分支。`needs_input` 类别保留，但不是跨调用续答协议。
 
-```json
-{
-  "status": "applied",
-  "appliedCount": 1,
-  "question": "还有哪个适用范围需要澄清？",
-  "continuationToken": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-  "feed": { "status": "incomplete", "stage": "source_window" }
-}
-```
+## 结束与超时
 
-这是字段示例，不是实际验收结果。重复字母标记仅为夹具，实际关联使用随机标记。
+交互未完成可在 `incomplete` 上携带 `reason`：
 
-## 调用与呈现
+| reason | 含义 |
+|---|---|
+| `interaction_unavailable` | 客户端或当前调用无法提供交互 |
+| `interaction_declined` | 客户端拒绝交互；可能由权限策略自动拒绝，不能断言是用户点击拒绝 |
+| `interaction_cancelled` | 交互被取消 |
+| `interaction_timeout` | 调用等待超时 |
 
-`request` 已在内部观察本轮语境，同一轮不要再调用 `observe_context`。每次调用都根据当前事实重新观察用户原话，不按历史原话跳过；同一句话在关注变化后再次表达仍可更新语境。`already_observed` 保留在公开结果类别中。`record_feedback` 只管理收藏，不代表喜欢或不喜欢。
+这些原因适用于 `observe_context` 的 `context_observation` 和反馈的 `feedback_interpretation`；发现被取消／超时使用 `request` 的 `shutdown` 阶段，分别带 `interaction_cancelled` / `interaction_timeout`。历史 `request` 的 `context_observation` / `personal_context` 仍保留兼容校验，但普通发现不再做画像问答。`request` 的 `source_window` 另可带 `observation_failed`、`partial_observation`、`material_insufficient`。
 
-- 个人信息表达，以及 `request` 或 `observe_context` 提出的问题的回答，交给 `observe_context`；语义反馈及 `process_feedback` 提出的问题的回答，交给 `process_feedback`。
-- 调用方在当前有效问答内自动携带 `continuationToken`，保持本条 `currentText` 原样，不重发旧请求、不把旧原文拼成新的用户消息。`request` 不接收标记。
-- 只为本次关联更新标记：返回了新的问题/token 对就使用该对；对应调用没有返回剩余问题时结束该关联。无关的普通调用或收藏结果不用于清除另一条问答的标记。关联中断后不猜测或重建它，不建立跨会话恢复设施。
-- `request` 的 `incomplete/personal_context` 带问题时表示等待补充；不带问题时仍按普通未完成呈现。`ignored` 或 `applied` 带问题也继续呈现问题。
-- 回答调用返回 `incomplete` 并保留问题/token 时，说明这次回答尚未处理成功，问题是上次保留的续答关联，不是针对最新回答的新追问。不得据此声称最新回答已记住，或继续沿用旧问题里的判断来评价用户。
-- 来源未完成有 `reason` 时按本次实际原因呈现；旧结果没有 `reason` 时只说明已知的来源阶段，不猜测具体原因。
-- 问题与 `feed` 同时出现时同时呈现；没有问题时不自行补问。调用方不得因为 `feed` 存在或个人信息变得足够，再额外调用一次 `request`；普通更新没有 `feed` 就只呈现更新结果。
+整次服务调用默认 300 秒，表单只用剩余时间，不另开完整等待周期。无法确定内部阶段的请求异常结束为 `incomplete/shutdown`，文案仅说明本次请求中止；独立更新／反馈的内部异常使用各自的普通 `incomplete` 阶段。建议 Codex 工具超时 360 秒。取消或超时保留此前已经提交的局部事实，不恢复未完成请求。
 
-token 保持 32 字节随机值编码成的 43 字符 base64url 格式，不展示给用户，不进入可读文本或日志。格式非法为 MCP 输入错误；格式合法但无法关联时，`observe_context` 返回 `incomplete/context_observation`，`process_feedback` 返回 `incomplete/feedback_interpretation`，不制造新问题、修改个人信息或重跑 Feed。
+## 连接与错误边界
 
-`observe_context.appliedCount` 是本次实际提交的变更项数：有效新增一条计一项，替换或撤回一个旧事实计一项（拆分为多条仍计一项）。重复新增和等值替换计零项；它不是事实总数的增量，也不表示个人信息已经足够。
+Streamable HTTP 的 MCP 连接状态只在 HTTP 接入层内存中保存，用于协议路由。标准连接 ID 不进入领域数据或日志，也不表示用户身份。鉴权后的 `DELETE /mcp` 和服务停止释放连接及等待；单纯关闭客户端而不发送 DELETE 不保证立即清理，当前调用仍受总期限约束。没有持久化待回答表、跨重启恢复、重放或连接 TTL。重启后客户端须重新初始化。
 
-`business_empty`、`needs_input` 和可说明阶段的 `incomplete` 都是正常业务结果。Bearer 鉴权失败、非法输入 schema、内部返回越出上述封闭合同，以及存储故障才是 MCP error。服务错误不会伪装成空 Feed。
+`appliedCount` 是本次调用实际提交的变更项数，可累计多轮回答；重复新增和等值替换计零。它不等于事实总数变化，也不证明个人资料足够。
 
-## 当前支持边界
+业务空、`needs_input`、`incomplete` 都是正常结果。只有鉴权、非法输入和明确的存储故障是 MCP error；内部异常或非法内部输出不得伪装成存储故障、正常空或保存成功。诊断日志失败不翻转已经得到的业务结果。日志不记录用户原文、来源正文、完整 URL、协议连接 ID 或凭证。
 
-默认应用已实现个人信息澄清、局部更新和原 Feed 自动续做。服务依据已提交事实为明确缺少的类别提供追问；语义或适用范围不清时使用模型的问题。缺少两类信息之一时不能仅凭模型声称足够就开始筛选。信息类别齐备但模型认为不足、又没有提供具体问题时，返回个人信息处理未完成，不猜测缺口。
+`record_feedback` 和 `list_saved` 没有 `incomplete` 类别：本地超时、服务关闭或未知内部异常通过当前 HTTP 请求的传输失败结束，不增加结果类别。客户端主动取消由 MCP 协议处理，与服务本地 timer 区分。中断只说明没有得到可靠确认；若提交已经开始，不能据此认定未保存，应先查询收藏状态再决定下一步，不自动重试。
 
-问答关联仅在当前进程中有效，重启保留已经提交的个人信息，不恢复旧问题或未完成请求。接入测试、真实应用加受控模型的测试，以及真实模型和 X 使用验收分别记录，不能互相替代。完整业务交接要求见 [D00 合同](d00-handoff.md)。
+自动测试与真实 Codex 界面验收分别记录；协议通过不能替代用户实际收答与真实 Feed 验收。历史 D00 文档中的跨调用标记流程已由本合同取代。
+
+
+## V0 来源与推荐限制
+
+成功结果仍只包含一条真实候选原文。可选 `limitations` 为去重数组，值为：`partial_observation`（仅取得部分来源）、`material_insufficient`（部分条目正文不足）、`judgement_incomplete`（部分条目判断失败）。多个问题可同时呈现；无问题时省略。调用方应连同原文说明实际限制，不能声称整批完整。
+
+可信部分材料先继续判断；单条判断失败继续后续候选。整体来源失败、全部材料不足和整体判断失败仍按实际阶段结束为 `incomplete`。取消和整次时限优先结束，不因此继续下一候选。历史 `candidates.jsonl` 保留原样，但不再用作永久准入屏蔽或继续写判断账；本次去重不承诺跨调用永不重复。
+
+V0 仅实现 S1/S2。来源正常零候选或兴趣候选均无推荐时，返回 `{status:"incomplete",stage:"judgement_execution",reason:"exploration_not_ready"}`，说明后续探索尚未就绪，不能报告新版意义下的正常空，也不假称已探索。`business_empty` 类别为兼容保留，V1 完成探索后再使用其完整语义。复验入口与证据见 [V0 执行记录](v0-execution.md)。

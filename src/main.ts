@@ -11,7 +11,7 @@ export function parseServiceEnvironment(environment: NodeJS.ProcessEnv): Persona
   const host = environment.PERSONAL_FEED_HOST?.trim() || '127.0.0.1'
   if (host !== '127.0.0.1') throw new Error('Personal Feed v1 must bind to 127.0.0.1')
   const port = integer(environment.PERSONAL_FEED_PORT ?? '43180', 'PERSONAL_FEED_PORT', 1, 65_535)
-  const toolTimeoutMs = integer(environment.PERSONAL_FEED_TOOL_TIMEOUT_MS ?? '120000', 'PERSONAL_FEED_TOOL_TIMEOUT_MS', 1, 300_000)
+  const toolTimeoutMs = integer(environment.PERSONAL_FEED_TOOL_TIMEOUT_MS ?? '300000', 'PERSONAL_FEED_TOOL_TIMEOUT_MS', 1, 300_000)
   const model = parseOpenAICompatibleConfig({
     baseURL: required(environment, 'PERSONAL_FEED_MODEL_BASE_URL'),
     model: required(environment, 'PERSONAL_FEED_MODEL'),

@@ -51,16 +51,19 @@ describe('standalone MCP end to end', () => {
       items: [expect.objectContaining({ url: 'https://x.com/example/status/1', title: 'useful update' })],
     })
 
-    await expectStatus(client, 'request', { currentText: '再来一条。' }, 'business_empty')
+    const explorationGap = await expectStatus(client, 'request', { currentText: '再来一条。' }, 'incomplete')
+    expect(explorationGap.structuredContent).toEqual({
+      status: 'incomplete', stage: 'judgement_execution', reason: 'exploration_not_ready',
+    })
     const incomplete = await expectStatus(client, 'request', { currentText: '再试一次。' }, 'incomplete')
     expect(incomplete.structuredContent).toEqual({ status: 'incomplete', stage: 'judgement_execution' })
   })
 
   it.each([
-    { name: 'insufficient personal information', sufficient: false, invalidMaterial: false, unfinishedJudgment: false, stage: 'personal_context', observed: 0 },
-    { name: 'unfinished required judgment', sufficient: true, invalidMaterial: false, unfinishedJudgment: true, stage: 'judgement_execution', observed: 1 },
-    { name: 'invalid source material', sufficient: true, invalidMaterial: true, unfinishedJudgment: false, stage: 'source_window', observed: 1 },
-  ])('returns $name as a normal incomplete through MCP', async scenario => {
+    { name: 'empty personal information', sufficient: false, invalidMaterial: false, unfinishedJudgment: false, result: { status: 'one_link', url: 'https://x.com/example/status/1' }, observed: 1 },
+    { name: 'unfinished required judgment', sufficient: true, invalidMaterial: false, unfinishedJudgment: true, result: { status: 'incomplete', stage: 'judgement_execution' }, observed: 1 },
+    { name: 'invalid source material', sufficient: true, invalidMaterial: true, unfinishedJudgment: false, result: { status: 'incomplete', stage: 'source_window', reason: 'material_insufficient' }, observed: 1 },
+  ])('returns the V0 $name boundary through MCP', async scenario => {
     const model = await startFakeOpenAI({ sufficient: scenario.sufficient, unfinishedJudgment: scenario.unfinishedJudgment })
     cleanup.push(model.close)
     let observed = 0
@@ -79,11 +82,8 @@ describe('standalone MCP end to end', () => {
 
     const result = await client.callTool({ name: 'request', arguments: { currentText: '给我一条 Personal Feed。' } })
     expect(result.isError).not.toBe(true)
-    expect(result.structuredContent).toEqual({ status: 'incomplete', stage: scenario.stage,
-      ...(!scenario.sufficient ? { question: '具体了解哪些可靠性方法？', continuationToken: expect.any(String) } : {}),
-      ...(scenario.invalidMaterial ? { reason: 'material_insufficient' } : {}),
-    })
-    expect(result.content).toEqual([{ type: 'text', text: expect.stringContaining(!scenario.sufficient ? '等待你补充信息' : scenario.invalidMaterial ? '无法完成' : '未完成') }])
+    expect(result.structuredContent).toEqual(scenario.result)
+    expect(result.content).toEqual([{ type: 'text', text: expect.any(String) }])
     expect(observed).toBe(scenario.observed)
   })
 
@@ -105,8 +105,9 @@ describe('standalone MCP end to end', () => {
       async close() {},
     })
     cleanup.push(fixture.close)
-    const first = await connect(fixture.running.origin, 'client-one')
-    const second = await connect(fixture.running.origin, 'client-two')
+    const first = await connect(fixture.running.origin, 'client-one', 'background')
+    const second = await connect(fixture.running.origin, 'client-two', 'background')
+    await writeFile(join(fixture.stateDir, 'personal-context.json'), JSON.stringify({ schemaVersion: 1, generation: 1, facts: [{ lane: 'long_term_interest', statement: 'reliable systems', stance: 'include' }, { lane: 'existing_knowledge', statement: 'basic reliability concepts', epistemic: 'asserted' }] }))
     cleanup.push(() => first.close(), () => second.close())
 
     const requests = await Promise.all([
@@ -189,10 +190,10 @@ function observation(identifier: number) {
   }
 }
 
-async function connect(origin: string, name: string): Promise<Client> {
+async function connect(origin: string, name: string, mode = 'interactive'): Promise<Client> {
   const client = new Client({ name, version: '1.0.0' })
   const transport = new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
-    requestInit: { headers: { authorization: `Bearer ${TOKEN}` } },
+    requestInit: { headers: { authorization: `Bearer ${TOKEN}`, 'Personal-Feed-Mode': mode } },
   })
   await client.connect(transport as Transport)
   return client
@@ -220,7 +221,9 @@ async function startFakeOpenAI(options: {
       const system = body.messages[0]?.content ?? ''
       const payload = JSON.parse(body.messages[1]?.content ?? '{}') as Record<string, unknown>
       let result: unknown
-      if (system.startsWith('Extract only durable personal context')) {
+      if (system.startsWith('Assess only the saved')) {
+        result = { status: 'completed', sufficient: options.sufficient ?? true }
+      } else if (system.startsWith('Extract only durable personal context')) {
         result = {
           status: 'applied',
           ...(payload.assessForFeed === true ? { sufficient: options.sufficient ?? true } : {}),

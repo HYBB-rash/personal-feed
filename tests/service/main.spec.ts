@@ -13,6 +13,7 @@ describe('service environment', () => {
     })
     expect(parsed.host).toBe('127.0.0.1')
     expect(parsed.port).toBe(43180)
+    expect(parsed.toolTimeoutMs).toBe(300_000)
     expect(parsed.mcpToken).toBe('mcp-token-1234567890')
     expect(parsed.model.apiKey).toBe('model-key-1234567890')
     expect(parsed.stateDir).toBe('/tmp/personal-feed-home/.local/state/personal-feed')

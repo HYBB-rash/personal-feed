@@ -1,6 +1,6 @@
 type Schema = Readonly<Record<string, unknown>>
 type Properties = Readonly<Record<string, Schema>>
-type Operation = 'observe_context' | 'interpret_feedback' | 'judge_candidate'
+type Operation = 'assess_context' | 'observe_context' | 'interpret_feedback' | 'judge_candidate'
 
 const text = { type: 'string' }
 const value = (...values: string[]): Schema => ({ type: 'string', enum: values })
@@ -28,7 +28,9 @@ function variants(required: Properties, optional: Properties): Schema[] {
 /** Describes the existing decoder's wire format; it does not replace validation. */
 export function modelResponseSchema(operation: Operation, assessment: boolean, continuation: boolean): Schema {
   let results: Schema[]
-  if (operation === 'judge_candidate') {
+  if (operation === 'assess_context') {
+    results = [object({ status: value('incomplete') }), object({ status: value('completed'), sufficient: { type: 'boolean' } })]
+  } else if (operation === 'judge_candidate') {
     results = [object({ longTermValue: value('pass', 'fail', 'unknown'),
       longTermInterestMatch: value('pass', 'fail', 'unknown', 'not_reached'),
       informationIncrement: value('pass', 'fail', 'unknown', 'not_reached') })]

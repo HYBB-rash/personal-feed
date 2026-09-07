@@ -7,7 +7,14 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { AddressInfo } from 'node:net'
 
-export const BOUNDARY_CASES = ['A10-1', 'A10-2', 'A11-1', 'A11-2', 'A11-3', 'A11-4', 'A11-5'] as const
+export const BOUNDARY_CASES = [
+  'partial_body_shortage',
+  'single_judgement_failure',
+  'whole_source_failure',
+  'all_body_insufficient',
+  'whole_judgement_failure',
+  'empty_context_direct_discovery',
+] as const
 export type BoundaryCase = typeof BOUNDARY_CASES[number]
 type Mode = BoundaryCase | 'recovered'
 export const FIXTURE_REQUEST = '给我一次个人 Feed。'
@@ -27,7 +34,8 @@ export async function prepareBoundaryFixture(scenario: BoundaryCase) {
   const observerCliPath = join(root, 'observer.py')
   const modelEventsPath = join(root, 'model-events.jsonl')
   await mkdir(stateDir, { mode: 0o700 })
-  await writeFile(join(stateDir, 'personal-context.json'), JSON.stringify({ schemaVersion: 1, generation: 1, facts: FIXTURE_FACTS }), { mode: 0o600 })
+  const initialFacts = scenario === 'empty_context_direct_discovery' ? [] : FIXTURE_FACTS
+  await writeFile(join(stateDir, 'personal-context.json'), JSON.stringify({ schemaVersion: 1, generation: 1, facts: initialFacts }), { mode: 0o600 })
   let mode: Mode = scenario
   const modelEvents: Array<{ operation: 'context' | 'judge'; mode: Mode; outcome: string }> = []
   const recordModelEvent = async (event: typeof modelEvents[number]) => {
@@ -36,7 +44,6 @@ export async function prepareBoundaryFixture(scenario: BoundaryCase) {
   }
   await writeFile(modePath, JSON.stringify(mode), { mode: 0o600 })
   await writeFile(observerCliPath, observerScript(modePath, observationEventsPath), { mode: 0o600 })
-  if (scenario === 'A11-5') await writeFile(join(stateDir, 'candidates.jsonl'), '{invalid storage\n')
   const modelServer = createServer(async (request, response) => {
     if (request.method !== 'POST' || request.url !== '/v1/chat/completions') {
       response.writeHead(404).end(); return
@@ -45,21 +52,22 @@ export async function prepareBoundaryFixture(scenario: BoundaryCase) {
       const chunks: Buffer[] = []
       for await (const chunk of request) chunks.push(Buffer.from(chunk))
       const wire = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { messages: Array<{ content: string }> }
-      const payload = JSON.parse(wire.messages[1]!.content) as { activeFacts?: unknown[]; assessForFeed?: boolean }
+      const payload = JSON.parse(wire.messages[1]!.content) as { activeFacts?: unknown[]; assessForFeed?: boolean; candidate?: { canonicalUrl?: string } }
       const operation = wire.messages[0]!.content.startsWith('Judge one') ? 'judge' : 'context'
-      if (operation === 'judge' && mode === 'A11-4') {
+      const judgementFailure = operation === 'judge' && (mode === 'whole_judgement_failure'
+        || mode === 'single_judgement_failure' && payload.candidate?.canonicalUrl?.endsWith('/101') === true)
+      if (judgementFailure) {
         await recordModelEvent({ operation, mode, outcome: 'http_503' })
         response.writeHead(503, { 'content-type': 'application/json' }).end('{}'); return
       }
       let content: unknown
       if (operation === 'judge') {
-        const rejected = mode === 'A10-2'
-        content = { longTermValue: rejected ? 'fail' : 'pass', longTermInterestMatch: rejected ? 'not_reached' : 'pass', informationIncrement: rejected ? 'not_reached' : 'pass' }
-        await recordModelEvent({ operation, mode, outcome: rejected ? 'not_qualified' : 'qualified' })
+        content = { longTermValue: 'pass', longTermInterestMatch: 'pass', informationIncrement: 'pass' }
+        await recordModelEvent({ operation, mode, outcome: 'qualified' })
       } else {
         const assessment = payload.assessForFeed ? { sufficient: true } : {}
         const prepared = JSON.stringify(payload.activeFacts) === JSON.stringify(FIXTURE_FACTS)
-        content = prepared ? { status: 'ignored', ...assessment } : { status: 'incomplete' }
+        content = prepared ? wire.messages[0]!.content.startsWith('Assess only the saved') ? { status: 'completed', sufficient: true } : { status: 'ignored', ...assessment } : { status: 'incomplete' }
         await recordModelEvent({ operation, mode, outcome: prepared ? 'success' : 'fixture_context_missing' })
       }
       response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(content) } }] }))
@@ -87,9 +95,8 @@ export async function prepareBoundaryFixture(scenario: BoundaryCase) {
     async recover() {
       mode = 'recovered'
       await writeFile(modePath, JSON.stringify(mode))
-      if (scenario === 'A11-5') await writeFile(join(stateDir, 'candidates.jsonl'), '')
     },
-    async observations(): Promise<Array<{ mode: Mode; kind: string; candidates: number; snapshotFailedAfterMaterial?: boolean }>> {
+    async observations(): Promise<Array<{ mode: Mode; kind: string; occurrences: number }>> {
       const raw = await readFile(observationEventsPath, 'utf8').catch(() => '')
       return raw.trim() === '' ? [] : raw.trim().split('\n').map(line => JSON.parse(line))
     },
@@ -147,73 +154,49 @@ function observerScript(modePath: string, eventsPath: string): string {
 request = json.loads(sys.argv[1])
 with open(${JSON.stringify(modePath)}, encoding="utf8") as stream:
     mode = json.load(stream)
-if mode == "A11-2":
-    import io
-    sys.path.insert(0, ${JSON.stringify(resolve('python'))})
-    from test_x_personal_feed_observer import _FakeBrowser, _FakeClock, _FakeEvaluator, _FakeLock, _body_item, _plans_for_snapshot, _invoke
-    import x_personal_feed_observer
-    import x_personal_feed_observer_cli
-
-    class AuditedEvaluator(_FakeEvaluator):
-        def __init__(self, clock, plans):
-            super().__init__(clock, plans=plans)
-            self.acquired = set()
-            self.failed_after_material = False
-
-        def evaluate(self, ws_url, action, **kwargs):
-            try:
-                value = super().evaluate(ws_url, action, **kwargs)
-            except RuntimeError:
-                if action == "snapshot" and self.acquired:
-                    self.failed_after_material = True
-                raise
-            if action == "snapshot":
-                for item in value.get("items", []):
-                    if item.get("body"):
-                        self.acquired.add(item["sourceUrl"])
-            return value
-
-    clock = _FakeClock()
-    item = _body_item("https://x.com/fixture/status/101", author="fixture", body="Controlled fixture source text about agent systems.")
-    plans = _plans_for_snapshot({"items": [item], "cards": [item], "explicitEmpty": False})
-    plans[("for_you", "snapshot")] = [plans[("for_you", "snapshot")][0], RuntimeError("snapshot_failed")]
-    evaluator = AuditedEvaluator(clock, plans)
-    observed = _invoke(x_personal_feed_observer, clock, _FakeBrowser(clock), _FakeLock(), evaluator)
-    output = io.StringIO()
-    x_personal_feed_observer_cli.run_cli(bytes(json.dumps(request), "utf-8"), stdout=output, observer=lambda _deadline: observed)
-    wire = json.loads(output.getvalue())
-    assert wire["kind"] == "incomplete" and all("occurrences" not in face for face in wire["surfaces"])
-    with open(${JSON.stringify(eventsPath)}, "a", encoding="utf8") as stream:
-        stream.write(json.dumps({"mode": mode, "kind": observed["kind"], "candidates": len(evaluator.acquired), "snapshotFailedAfterMaterial": evaluator.failed_after_material}) + "\\n")
-    sys.stdout.write(output.getvalue())
-    sys.exit(0)
-failed = mode == "A11-1"
-zero = mode == "A10-1"
-insufficient = mode == "A11-3"
-# Other cases use a bounded, controlled observation window.
-acquired = []
-if not failed and not zero:
-    published = (datetime.datetime.fromisoformat(request["cutoff"].replace("Z", "+00:00")) - datetime.timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
-    acquired.append({"occurrenceOrdinal": 0, "sourceUrl": "https://x.com/fixture/status/" + ("202" if mode == "recovered" else "101"), "authorHandle": "fixture", "publishedAt": published, "body": {"kind": "insufficient", "reason": "controlled missing body"} if insufficient else {"kind": "sufficient", "text": "Controlled fixture source text about agent systems."}})
-surfaces = []
-for index, surface in enumerate(["for_you", "following", "explore"]):
-    face = {"surface": surface, "surfaceOrdinal": index}
-    if failed:
-        face["kind"] = "failed"
+stamp = request["cutoff"]
+published = (datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")) - datetime.timedelta(seconds=1)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+def occurrence(identifier, body, ordinal):
+    return {"occurrenceOrdinal": ordinal, "sourceUrl": "https://x.com/fixture/status/" + identifier, "authorHandle": "fixture", "publishedAt": published, "capturedAt": stamp, "body": body}
+if mode == "whole_source_failure":
+    kind = "incomplete"
+    surfaces = [
+        {"surface": "for_you", "surfaceOrdinal": 0, "kind": "failed"},
+        {"surface": "following", "surfaceOrdinal": 1, "kind": "unknown"},
+        {"surface": "explore", "surfaceOrdinal": 2, "kind": "failed"},
+    ]
+else:
+    kind = "complete"
+    if mode == "recovered":
+        acquired = [occurrence("202", {"kind": "sufficient", "text": "Controlled recovered source text."}, 0)]
+    elif mode == "partial_body_shortage":
+        acquired = [
+            occurrence("101", {"kind": "insufficient", "reason": "controlled missing body"}, 0),
+            occurrence("102", {"kind": "sufficient", "text": "Controlled usable source text."}, 1),
+        ]
+    elif mode == "single_judgement_failure":
+        acquired = [
+            occurrence("101", {"kind": "sufficient", "text": "Controlled first source text."}, 0),
+            occurrence("102", {"kind": "sufficient", "text": "Controlled second source text."}, 1),
+        ]
+    elif mode == "all_body_insufficient":
+        acquired = [occurrence("101", {"kind": "insufficient", "reason": "controlled missing body"}, 0)]
     else:
-        face["kind"] = "complete" if index == 0 and acquired else "natural_zero"
-        face["occurrences"] = acquired if index == 0 else []
-    surfaces.append(face)
-kind = "incomplete" if failed else "complete"
+        acquired = [occurrence("101", {"kind": "sufficient", "text": "Controlled source text."}, 0)]
+    surfaces = [
+        {"surface": "for_you", "surfaceOrdinal": 0, "kind": "complete", "startedAt": stamp, "completedAt": stamp, "occurrences": acquired},
+        {"surface": "following", "surfaceOrdinal": 1, "kind": "natural_zero", "startedAt": stamp, "completedAt": stamp, "occurrences": []},
+        {"surface": "explore", "surfaceOrdinal": 2, "kind": "natural_zero", "startedAt": stamp, "completedAt": stamp, "occurrences": []},
+    ]
 with open(${JSON.stringify(eventsPath)}, "a", encoding="utf8") as stream:
-    stream.write(json.dumps({"mode": mode, "kind": kind, "candidates": len(acquired)}) + "\\n")
-print(json.dumps({"schemaVersion": 1, "requestId": request["requestId"], "cutoff": request["cutoff"], "shanghaiDay": request["shanghaiDay"], "kind": kind, "surfaces": surfaces}))
+    stream.write(json.dumps({"mode": mode, "kind": kind, "occurrences": 0 if mode == "whole_source_failure" else len(acquired)}) + "\\n")
+print(json.dumps({"schemaVersion": 1, "requestId": request["requestId"], "cutoff": request["cutoff"], "shanghaiDay": request["shanghaiDay"], "kind": kind, "startedAt": stamp, "completedAt": stamp, "surfaces": surfaces}))
 `
 }
 
 if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
   const scenario = process.argv[2]
-  if (!BOUNDARY_CASES.includes(scenario as BoundaryCase)) throw new Error('Expected A10-1, A10-2, or A11-1 through A11-5')
+  if (!BOUNDARY_CASES.includes(scenario as BoundaryCase)) throw new Error(`Expected one of: ${BOUNDARY_CASES.join(', ')}`)
   const fixture = await prepareBoundaryFixture(scenario as BoundaryCase)
   process.stdout.write(`${JSON.stringify({ scenario, helperPid: process.pid, root: fixture.root, environmentPath: fixture.environmentPath, modelEventsPath: fixture.modelEventsPath, observationEventsPath: fixture.observationEventsPath })}\n`)
   process.once('SIGUSR1', () => {

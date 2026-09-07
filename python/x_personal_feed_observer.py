@@ -236,7 +236,7 @@ def _empty_proof_matches(surface, value):
 
 
 def _face(surface, ordinal, kind, started, completed, occurrences=None):
-    if kind in {"complete", "natural_zero"}:
+    if kind in {"complete", "natural_zero", "partial"}:
         return {
             "kind": kind,
             "surface": surface,
@@ -248,19 +248,24 @@ def _face(surface, ordinal, kind, started, completed, occurrences=None):
     return {"surface": surface, "surfaceOrdinal": ordinal, "kind": kind}
 
 
-def _incomplete(started, clock, kinds=None):
+def _incomplete(started, clock, kinds=None, completed_faces=None):
     try:
         completed = _stamp(_now(clock))
     except Exception:
         completed = started
     kinds = kinds or {}
+    completed_faces = completed_faces or {}
     return {
         "schemaVersion": 1,
         "kind": "incomplete",
         "startedAt": started,
         "completedAt": completed,
         "surfaces": [
-            {"surface": surface, "surfaceOrdinal": ordinal, "kind": kinds.get(surface, "unknown")}
+            completed_faces.get(surface, {
+                "surface": surface,
+                "surfaceOrdinal": ordinal,
+                "kind": kinds.get(surface, "unknown"),
+            })
             for ordinal, surface in enumerate(SURFACES)
         ],
     }
@@ -478,56 +483,66 @@ def observe(deadline_epoch_ms, *, clock, browser, lock, evaluator):
             if not isinstance(ws_url, str) or not ws_url:
                 raise _BadObservation()
             for ordinal, surface in enumerate(SURFACES):
-                face_started = _stamp(_now(clock))
-                navigation = _act(
-                    clock,
-                    deadline,
-                    evaluator,
-                    ws_url,
-                    "navigate",
-                    surface,
-                    before=lambda: kinds.__setitem__(surface, "failed"),
-                )
-                if not isinstance(navigation, dict):
-                    raise _BadObservation()
-                page_url = navigation.get("url")
-                page_body = navigation.get("body")
-                classifier = getattr(browser, "classify_x_page", None)
-                if callable(classifier) and classifier(page_url, page_body) != "ready":
-                    raise _BadObservation()
-                probe = _act(clock, deadline, evaluator, ws_url, "probe", surface)
-                if not isinstance(probe, dict) or not _proof_matches(surface, probe.get("surfaceProof")):
-                    kinds[surface] = "unknown"
-                    raise _BadObservation()
-                kind, occurrences = _surface_observe(
-                    surface, ordinal, ws_url, deadline, clock, evaluator, face_started
-                )
-                kinds[surface] = kind
-                if kind not in {"complete", "natural_zero"}:
-                    raise _BadObservation()
+                occurrences = []
                 try:
-                    _live(clock, deadline)
-                    completed_at = _live_stamp(clock, deadline)
+                    face_started = _live_stamp(clock, deadline)
+                    navigation = _act(
+                        clock,
+                        deadline,
+                        evaluator,
+                        ws_url,
+                        "navigate",
+                        surface,
+                        before=lambda: kinds.__setitem__(surface, "failed"),
+                    )
+                    if not isinstance(navigation, dict):
+                        raise _BadObservation()
+                    page_url = navigation.get("url")
+                    page_body = navigation.get("body")
+                    classifier = getattr(browser, "classify_x_page", None)
+                    if callable(classifier) and classifier(page_url, page_body) != "ready":
+                        raise _BadObservation()
+                    probe = _act(clock, deadline, evaluator, ws_url, "probe", surface)
+                    if not isinstance(probe, dict) or not _proof_matches(surface, probe.get("surfaceProof")):
+                        kinds[surface] = "unknown"
+                        raise _BadObservation()
+                    kind, occurrences = _surface_observe(
+                        surface, ordinal, ws_url, deadline, clock, evaluator, face_started
+                    )
+                    kinds[surface] = kind
+                    if kind in {"complete", "natural_zero", "partial"}:
+                        completed_faces[surface] = _face(
+                            surface,
+                            ordinal,
+                            kind,
+                            face_started,
+                            _live_stamp(clock, deadline),
+                            occurrences,
+                        )
                 except _Deadline:
                     kinds[surface] = "partial" if occurrences else "failed"
-                    raise
-                completed_faces[surface] = _face(
-                    surface,
-                    ordinal,
-                    kind,
-                    face_started,
-                    completed_at,
-                    occurrences,
-                )
+                    if occurrences:
+                        completed_faces[surface] = _face(
+                            surface,
+                            ordinal,
+                            "partial",
+                            face_started,
+                            _stamp(_now(clock)),
+                            occurrences,
+                        )
+                    return _incomplete(started, clock, kinds, completed_faces)
+                except Exception:
+                    if kinds[surface] != "unknown":
+                        kinds[surface] = "failed"
     except Exception:
-        return _incomplete(started, clock, kinds)
+        return _incomplete(started, clock, kinds, completed_faces)
 
     if any(kind not in {"complete", "natural_zero"} for kind in kinds.values()) or len(kinds) != len(SURFACES):
-        return _incomplete(started, clock, kinds)
+        return _incomplete(started, clock, kinds, completed_faces)
     try:
         _live(clock, deadline)
     except Exception:
-        return _incomplete(started, clock, kinds)
+        return _incomplete(started, clock, kinds, completed_faces)
     return _complete_result(started, clock, completed_faces)
 
 

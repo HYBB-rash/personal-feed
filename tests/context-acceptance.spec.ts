@@ -36,64 +36,20 @@ async function fixture(facts: readonly PersonalContextFact[]) {
 }
 
 it.each([
-  { name: 'both missing', facts: [], expected: ['长期关注', '已有认识'], absent: [] },
-  { name: 'knowledge missing', facts: [interest], expected: ['已有认识'], absent: ['你的长期关注是什么'] },
-  { name: 'interest missing', facts: [knowledge], expected: ['长期关注'], absent: ['你已经了解'] },
-])('A02: creates a usable continuation when $name and the model omits the question', async scenario => {
+  { name: 'empty', facts: [] },
+  { name: 'partial', facts: [interest] },
+  { name: 'uncertain', facts: [interest, { ...knowledge, epistemic: 'uncertain' as const }] },
+])('A02 V0: discovers directly with $name context and never asks for profile completion', async scenario => {
   const f = await fixture(scenario.facts)
-  const first = await f.app.request({ currentText: '给我一次个人 Feed' })
-  expect(first).toMatchObject({ status: 'incomplete', stage: 'personal_context', continuationToken: expect.any(String) })
-  for (const text of scenario.expected) expect(first.question).toContain(text)
-  for (const text of scenario.absent) expect(first.question).not.toContain(text)
-  expect(f.observer.observe).not.toHaveBeenCalled()
-  expect(await f.facts()).toEqual(scenario.facts)
-  f.respond({ status: 'ignored', sufficient: false, remaining: null })
-  const vague = await f.app.observeContext({ currentText: '我还没有说清楚', continuationToken: first.continuationToken })
-  expect(vague).toMatchObject({ status: 'ignored', question: expect.any(String), continuationToken: expect.any(String) })
-  expect(vague).not.toHaveProperty('feed')
-  expect(f.observer.observe).not.toHaveBeenCalled()
-  f.respond({ status: 'applied', sufficient: true, remaining: null,
-    changes: { additions: [interest, knowledge], replacements: [] } })
-  const done = await f.app.observeContext({ currentText: '明确的关注和认识', continuationToken: vague.continuationToken })
-  expect(done).toMatchObject({ status: 'applied', feed: { status: 'business_empty' } })
-  expect(done).not.toHaveProperty('question')
-  expect(f.observer.observe).toHaveBeenCalledTimes(1)
-  await f.app.observeContext({ currentText: '重复回答', continuationToken: vague.continuationToken })
-  expect(f.observer.observe).toHaveBeenCalledTimes(1)
-})
-
-it('does not trust sufficient=true when one required category is absent', async () => {
-  const f = await fixture([interest])
-  f.respond({ status: 'ignored', sufficient: true })
-  expect(await f.app.request({ currentText: 'Feed' })).toMatchObject({ stage: 'personal_context', question: expect.stringContaining('已有认识') })
-  expect(f.observer.observe).not.toHaveBeenCalled()
-})
-
-it('retains partial facts and narrows the fallback after one missing category is answered', async () => {
-  const f = await fixture([])
-  const first = await f.app.request({ currentText: 'Feed' })
-  f.respond({ status: 'applied', sufficient: false, remaining: null, changes: { additions: [interest], replacements: [] } })
-  const next = await f.app.observeContext({ currentText: '明确的长期关注', continuationToken: first.continuationToken })
-  expect(next).toMatchObject({ status: 'applied', appliedCount: 1, question: expect.stringContaining('已有认识') })
-  expect(next.question).not.toContain('你的长期关注是什么')
-  expect(await f.facts()).toEqual([interest])
-  expect(f.observer.observe).not.toHaveBeenCalled()
-})
-
-it('does not invent a semantic gap when both categories exist but the model supplies no question', async () => {
-  const f = await fixture([interest, knowledge])
+  const ask = vi.fn(async () => ({ action: 'cancel' as const }))
   const before = await f.facts()
-  expect(await f.app.request({ currentText: 'private-expression' })).toEqual({ status: 'incomplete', stage: 'context_observation' })
-  expect(f.events).toEqual([{ event: 'application_failure', operation: 'observe_context', reason: 'missing_clarification' }])
-  expect(JSON.stringify(f.events)).not.toContain('private-expression')
+  expect(await f.app.request({ currentText: '给我一次个人 Feed' }, { mode: 'interactive', ask })).toEqual({
+    status: 'incomplete', stage: 'judgement_execution', reason: 'exploration_not_ready',
+  })
+  expect(ask).not.toHaveBeenCalled()
+  expect(f.payloads).toEqual([])
+  expect(f.observer.observe).toHaveBeenCalledTimes(1)
   expect(await f.facts()).toEqual(before)
-  expect(f.observer.observe).not.toHaveBeenCalled()
-})
-
-it('keeps a specific model doubt question instead of replacing it with a category prompt', async () => {
-  const f = await fixture([interest, { ...knowledge, epistemic: 'uncertain' }])
-  f.respond({ status: 'ignored', sufficient: false, remaining: { question: '怀疑的是哪部分适用范围？', unresolvedScope: 'scope of old claim' } })
-  expect(await f.app.request({ currentText: 'Feed' })).toMatchObject({ question: '怀疑的是哪部分适用范围？' })
 })
 
 it('an ordinary update has no sufficiency fallback and never starts Feed', async () => {
@@ -107,7 +63,7 @@ it.each(['observation_failed', 'partial_observation', 'material_insufficient'] a
   const f = await fixture([interest, knowledge])
   f.respond({ status: 'ignored', sufficient: true })
   vi.mocked(f.observer.observe).mockResolvedValue({ status: 'incomplete', stage: 'source_window', reason })
-  expect(await f.app.request({ currentText: 'Feed' })).toEqual({ status: 'incomplete', stage: 'source_window', reason })
+  expect(await f.app.request({ currentText: 'Feed' }, { mode: 'interactive' })).toEqual({ status: 'incomplete', stage: 'source_window', reason })
 })
 
 it('diagnoses an invalid feedback replacement without logging its target or changing facts', async () => {

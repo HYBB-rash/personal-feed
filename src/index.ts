@@ -1,4 +1,5 @@
 export * from './application.ts'
+export * from './interaction.ts'
 export * from './config.ts'
 export * from './errors.ts'
 export * from './openai-compatible-model.ts'

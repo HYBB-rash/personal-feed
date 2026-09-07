@@ -132,15 +132,17 @@ describe('explicit personal-context changes', () => {
     await expect(f.app.observeContext({ currentText: 'Simple edits work; complex ones are uncertain.' }))
       .resolves.toEqual({ status: 'applied', appliedCount: 1 })
     expect((await f.read()).facts).toEqual([interest, narrow, doubt, other])
-    await f.app.request({ currentText: 'Feed' })
+    await f.app.request({ currentText: 'Feed' }, { mode: 'interactive' })
     expect(f.judgeCandidate).toHaveBeenCalledWith(expect.objectContaining({ personalContext: [interest, narrow, other] }))
-    expect(f.observeContext).toHaveBeenLastCalledWith(expect.objectContaining({ activeFacts: [interest, narrow, doubt, other] }))
+    expect(f.observeContext).toHaveBeenCalledTimes(1)
   })
 
-  it('uses an explicit correction for the candidate in that same request', async () => {
+  it('uses a separately applied explicit correction for the next discovery request', async () => {
     const f = await fixture()
     f.change({ additions: [], replacements: [{ target: broad, replacement: [narrow] }] })
-    await expect(f.app.request({ currentText: 'Only simple edits work; give me a Feed.' }))
+    await expect(f.app.observeContext({ currentText: 'Only simple edits work.' }))
+      .resolves.toEqual({ status: 'applied', appliedCount: 1 })
+    await expect(f.app.request({ currentText: 'Only simple edits work; give me a Feed.' }, { mode: 'interactive' }))
       .resolves.toEqual({ status: 'one_link', url: 'https://x.com/fixture/status/1' })
     expect(f.judgeCandidate).toHaveBeenCalledWith(expect.objectContaining({ personalContext: [interest, narrow, other] }))
     expect((await f.read()).facts).toEqual([interest, narrow, other])
@@ -150,18 +152,21 @@ describe('explicit personal-context changes', () => {
     const f = await fixture([interest, broad])
     const uncertain = { ...broad, epistemic: 'uncertain' } as const
     f.change({ additions: [], replacements: [{ target: broad, replacement: [uncertain] }] })
-    await expect(f.app.request({ currentText: 'I doubt that claim; give me a Feed.' }))
-      .resolves.toEqual({ status: 'incomplete', stage: 'personal_context', question: expect.any(String), continuationToken: expect.any(String) })
+    await expect(f.app.observeContext({ currentText: 'I doubt that claim.' }))
+      .resolves.toEqual({ status: 'applied', appliedCount: 1 })
+    await expect(f.app.request({ currentText: 'I doubt that claim; give me a Feed.' }, { mode: 'interactive' }))
+      .resolves.toEqual({ status: 'one_link', url: 'https://x.com/fixture/status/1' })
     expect((await f.read()).facts).toEqual([interest, uncertain])
-    expect(f.observe).not.toHaveBeenCalled()
-    expect(f.judgeCandidate).not.toHaveBeenCalled()
+    expect(f.judgeCandidate).toHaveBeenCalledWith(expect.objectContaining({ personalContext: [interest] }))
   })
 
   it('passes an explicit novice knowledge boundary through to selection', async () => {
     const f = await fixture([interest])
     const novice = { ...broad, statement: 'I am new to video editing and know none of its basics' }
     f.change({ additions: [novice], replacements: [] })
-    await expect(f.app.request({ currentText: 'I am new to this; give me a Feed.' })).resolves.toMatchObject({ status: 'one_link' })
+    await expect(f.app.observeContext({ currentText: 'I am new to video editing.' }))
+      .resolves.toEqual({ status: 'applied', appliedCount: 1 })
+    await expect(f.app.request({ currentText: 'I am new to this; give me a Feed.' }, { mode: 'interactive' })).resolves.toMatchObject({ status: 'one_link' })
     expect(f.judgeCandidate).toHaveBeenCalledWith(expect.objectContaining({ personalContext: [interest, novice] }))
   })
 
@@ -237,7 +242,7 @@ describe('explicit personal-context changes', () => {
 
   it('does not treat a recommendation, save or unspecified dislike as learned knowledge', async () => {
     const f = await fixture()
-    await f.app.request({ currentText: 'Feed' })
+    await f.app.request({ currentText: 'Feed' }, { mode: 'interactive' })
     await f.app.recordFeedback({ operation: 'save', url: 'https://x.com/fixture/status/1' })
     await f.app.processFeedback({ currentText: 'I dislike it.' })
     expect((await f.read()).facts).toEqual([interest, broad, other])

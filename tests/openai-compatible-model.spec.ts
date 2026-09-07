@@ -57,7 +57,10 @@ describe('OpenAI-compatible model boundary', () => {
     ['pass', 'pass', 'not_reached', 'incomplete'],
     ['unknown', 'not_reached', 'not_reached', 'incomplete'],
     ['pass', 'unknown', 'not_reached', 'incomplete'],
-    ['pass', 'pass', 'unknown', 'incomplete'],
+    ['pass', 'unknown', 'pass', 'qualified'],
+    ['pass', 'unknown', 'unknown', 'qualified'],
+    ['pass', 'unknown', 'fail', 'not_qualified'],
+    ['pass', 'pass', 'unknown', 'qualified'],
     ['fail', 'pass', 'pass', 'incomplete'],
     ['pass', 'fail', 'pass', 'incomplete'],
   ])('decodes only a finished judgment: %s / %s / %s => %s', async (longTermValue, longTermInterestMatch, informationIncrement, status) => {
@@ -193,4 +196,24 @@ it('accepts an explicitly resolved reference for the next question in either int
     wireResponse({ ...response, resolvedReferenceText: '' })
     await expect(model[method](input)).resolves.toEqual({ status: 'incomplete' })
   }
+})
+
+describe('read-only background assessment', () => {
+  it.each([true, false])('decodes semantic sufficiency=%s without interpretation fields', async sufficient => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ status: 'completed', sufficient }) } }] })))
+    vi.stubGlobal('fetch', fetch)
+    const activeFacts = [{ lane: 'existing_knowledge', statement: 'novice', epistemic: 'asserted' }] as const
+    expect(await createOpenAICompatiblePersonalFeedModel(config).assessContext({ requestText: 'Template', activeFacts, signal: new AbortController().signal })).toEqual({ status: 'completed', sufficient })
+    const wire = JSON.parse(fetch.mock.calls[0]![1]!.body as string)
+    expect(JSON.parse(wire.messages[1].content)).toEqual({ requestText: 'Template', activeFacts })
+    expect(wire.messages[0].content).toContain('never evidence about the user')
+  })
+  it.each([
+    { status: 'completed' }, { status: 'completed', sufficient: 'true' },
+    { status: 'completed', sufficient: true, changes: { additions: [], replacements: [] } },
+    { status: 'completed', sufficient: true, remaining: null }, { status: 'ignored', sufficient: true }, { status: 'incomplete' },
+  ])('rejects malformed or mutating assessment output: %j', async result => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }))))
+    expect(await createOpenAICompatiblePersonalFeedModel(config).assessContext({ requestText: 'Feed', activeFacts: [], signal: new AbortController().signal })).toEqual({ status: 'incomplete' })
+  })
 })

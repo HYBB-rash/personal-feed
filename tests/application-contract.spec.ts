@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto'
-import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -16,6 +15,7 @@ async function fixture(overrides: Partial<{
 }> = {}) {
   const stateDir = await mkdtemp(join(tmpdir(), 'personal-feed-core-'))
   const model: PersonalFeedModel = overrides.model ?? {
+    assessContext: vi.fn(async () => ({ status: 'completed' as const, sufficient: true })),
     observeContext: vi.fn<PersonalFeedModel['observeContext']>(async ({ assessForFeed }) => ({
       status: 'applied' as const,
       ...(assessForFeed ? { sufficient: true } : {}),
@@ -45,7 +45,7 @@ async function fixture(overrides: Partial<{
 }
 
 describe('PersonalFeedApplication public contract', () => {
-  it.each(['observeContext', 'processFeedback'] as const)('returns incomplete for an unknown association in %s without creating state or interpreting the reply', async operation => {
+  it.each(['observeContext', 'processFeedback'] as const)('rejects the removed cross-call association input in %s without touching state', async operation => {
     const { app, model, observer, stateDir } = await fixture()
     try {
       await app.observeContext({ currentText: '保存已有的明确资料。' })
@@ -53,10 +53,7 @@ describe('PersonalFeedApplication public contract', () => {
       const files = await readdir(stateDir)
       vi.mocked(model.observeContext).mockClear()
 
-      const result = await app[operation]({ currentText: '补充回答。', continuationToken: 'A'.repeat(43) })
-      expect(result.status).toBe('incomplete')
-      if (result.status !== 'incomplete') throw new Error('expected incomplete')
-      expect(result.stage).toBe(operation === 'observeContext' ? 'context_observation' : 'feedback_interpretation')
+      await expect(app[operation]({ currentText: '补充回答。', continuationToken: 'A'.repeat(43) } as never)).rejects.toMatchObject({ name: 'PersonalFeedInputError' })
       expect(await readdir(stateDir)).toEqual(files)
       expect(await readFile(join(stateDir, 'personal-context.json'), 'utf8')).toBe(before)
       expect(model.observeContext).not.toHaveBeenCalled()
@@ -72,7 +69,7 @@ describe('PersonalFeedApplication public contract', () => {
   it.each(['observeContext', 'processFeedback'] as const)('keeps malformed association tokens as input errors in %s', async operation => {
     const { app, model, observer, stateDir } = await fixture()
     try {
-      await expect(app[operation]({ currentText: '回答。', continuationToken: 'invalid' })).rejects.toMatchObject({
+      await expect(app[operation]({ currentText: '回答。', continuationToken: 'invalid' } as never)).rejects.toMatchObject({
         name: 'PersonalFeedInputError',
       })
       expect(await readdir(stateDir)).toEqual([])
@@ -85,15 +82,15 @@ describe('PersonalFeedApplication public contract', () => {
     }
   })
 
-  it('observes the current user text once and returns one qualified link', async () => {
+  it('uses the current request as discovery intent without rewriting personal context', async () => {
     const { app, model, observer } = await fixture()
 
     const currentText = '  我长期关注 agent systems  '
-    const result = await app.request({ currentText })
+    const result = await app.request({ currentText }, { mode: 'interactive' })
 
     expect(result).toEqual({ status: 'one_link', url: 'https://x.com/example/status/123' })
-    expect(model.observeContext).toHaveBeenCalledTimes(1)
-    expect(model.observeContext).toHaveBeenCalledWith(expect.objectContaining({ currentText }))
+    expect(model.observeContext).not.toHaveBeenCalled()
+    expect(model.judgeCandidate).toHaveBeenCalledWith(expect.objectContaining({ requestText: currentText }))
     expect(observer.observe).toHaveBeenCalledTimes(1)
     await app.close()
   })
@@ -103,14 +100,16 @@ describe('PersonalFeedApplication public contract', () => {
       observe: vi.fn(async () => ({ status: 'complete' as const, candidates: [] })),
       close: vi.fn(async () => undefined),
     } })
-    await expect(empty.app.request({ currentText: '我长期关注 agent systems' })).resolves.toEqual({ status: 'business_empty' })
+    await expect(empty.app.request({ currentText: '我长期关注 agent systems' }, { mode: 'interactive' })).resolves.toEqual({
+      status: 'incomplete', stage: 'judgement_execution', reason: 'exploration_not_ready',
+    })
     await empty.app.close()
 
     const incomplete = await fixture({ observer: {
       observe: vi.fn(async () => ({ status: 'incomplete' as const, stage: 'source_window' as const, reason: 'observation_failed' as const })),
       close: vi.fn(async () => undefined),
     } })
-    await expect(incomplete.app.request({ currentText: '我长期关注 agent systems' })).resolves.toEqual({
+    await expect(incomplete.app.request({ currentText: '我长期关注 agent systems' }, { mode: 'interactive' })).resolves.toEqual({
       status: 'incomplete', stage: 'source_window', reason: 'observation_failed',
     })
     await incomplete.app.close()
@@ -127,7 +126,7 @@ describe('PersonalFeedApplication public contract', () => {
             completedAt: '2026-09-04T00:00:00.000Z', occurrences: [],
           })),
         },
-        expected: { status: 'business_empty' },
+        expected: { status: 'incomplete', stage: 'judgement_execution', reason: 'exploration_not_ready' },
       },
       {
         name: 'insufficient material',
@@ -175,14 +174,15 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
 `)
       const observer = createPythonXObserver({ pythonBin: process.execPath, observerCliPath: script, timeoutMs: 2_000 })
       const entry = await fixture({ observer })
-      await expect(entry.app.request({ currentText: '我长期关注 agent systems' })).resolves.toEqual(testCase.expected)
+      await expect(entry.app.request({ currentText: '我长期关注 agent systems' }, { mode: 'interactive' })).resolves.toEqual(testCase.expected)
       expect(entry.model.judgeCandidate).not.toHaveBeenCalled()
       await entry.app.close()
     }
   })
 
-  it('requires both long-term-interest and existing-knowledge context lanes', async () => {
+  it('can discover directly with an empty personal context', async () => {
     const model: PersonalFeedModel = {
+      assessContext: vi.fn(async () => ({ status: 'completed' as const, sufficient: true })),
       observeContext: vi.fn(async () => ({
         status: 'applied',
         sufficient: true,
@@ -193,11 +193,11 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
     }
     const { app, observer } = await fixture({ model })
 
-    await expect(app.request({ currentText: '我长期关注 agent systems' })).resolves.toEqual({
-      status: 'incomplete', stage: 'personal_context',
-      question: expect.stringContaining('已有认识'), continuationToken: expect.any(String),
+    await expect(app.request({ currentText: '我长期关注 agent systems' }, { mode: 'interactive' })).resolves.toEqual({
+      status: 'one_link', url: 'https://x.com/example/status/123',
     })
-    expect(observer.observe).not.toHaveBeenCalled()
+    expect(observer.observe).toHaveBeenCalledTimes(1)
+    expect(model.judgeCandidate).toHaveBeenCalledWith(expect.objectContaining({ personalContext: [] }))
     await app.close()
   })
 
@@ -212,6 +212,7 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
 
   it('updates an interest when the user returns to an earlier statement', async () => {
     const { app } = await fixture({ model: {
+      assessContext: vi.fn(async () => ({ status: 'completed' as const, sufficient: true })),
       observeContext: async ({ currentText, activeFacts }) => {
         if (currentText === 'Feed') return { status: 'ignored', sufficient: true }
         const interest = { lane: 'long_term_interest' as const, statement: 'agents', stance: currentText === '不再关注 agents' ? 'exclude' as const : 'include' as const }
@@ -235,7 +236,7 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
       await app.observeContext({ currentText: '关注 agents' })
       await app.observeContext({ currentText: '不再关注 agents' })
       await app.observeContext({ currentText: '关注 agents' })
-      await expect(app.request({ currentText: 'Feed' })).resolves.toEqual({
+      await expect(app.request({ currentText: 'Feed' }, { mode: 'interactive' })).resolves.toEqual({
         status: 'one_link', url: 'https://x.com/example/status/123',
       })
     } finally {
@@ -243,12 +244,13 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
     }
   })
 
-  it('deduplicates stable ids across three surfaces and never reselects processed candidates after restart', async () => {
+  it('deduplicates stable ids within each request without persisting selection history', async () => {
     const stateDir = await mkdtemp(join(tmpdir(), 'personal-feed-history-'))
     const judgeCandidate = vi.fn(async ({ candidate }: Parameters<PersonalFeedModel['judgeCandidate']>[0]) => ({
       status: candidate.stableId === 'x-status:222' ? 'qualified' as const : 'not_qualified' as const,
     }))
     const model: PersonalFeedModel = {
+      assessContext: vi.fn(async () => ({ status: 'completed' as const, sufficient: true })),
       observeContext: vi.fn(async () => ({ status: 'applied', sufficient: true, changes: { additions: [
         { lane: 'long_term_interest', statement: 'distributed systems', stance: 'include' },
         { lane: 'existing_knowledge', statement: 'I know consensus basics', epistemic: 'asserted' },
@@ -267,7 +269,7 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
     }
     const first = createPersonalFeedApplication({ stateDir, model, observer })
 
-    await expect(first.request({ currentText: '我长期关注分布式系统，也了解共识基础' })).resolves.toEqual({
+    await expect(first.request({ currentText: '我长期关注分布式系统，也了解共识基础' }, { mode: 'interactive' })).resolves.toEqual({
       status: 'one_link', url: 'https://x.com/b/status/222',
     })
     expect(judgeCandidate.mock.calls.map(call => call[0].candidate.stableId)).toEqual(['x-status:111', 'x-status:222'])
@@ -275,12 +277,14 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
 
     judgeCandidate.mockClear()
     const reopened = createPersonalFeedApplication({ stateDir, model, observer })
-    await expect(reopened.request({ currentText: '我长期关注分布式系统，也了解共识基础' })).resolves.toEqual({ status: 'business_empty' })
-    expect(judgeCandidate).not.toHaveBeenCalled()
+    await expect(reopened.request({ currentText: '我长期关注分布式系统，也了解共识基础' }, { mode: 'interactive' })).resolves.toEqual({
+      status: 'one_link', url: 'https://x.com/b/status/222',
+    })
+    expect(judgeCandidate.mock.calls.map(call => call[0].candidate.stableId)).toEqual(['x-status:111', 'x-status:222'])
     await reopened.close()
   })
 
-  it('serializes full requests without reselecting their shared candidate', async () => {
+  it('serializes background selection requests', async () => {
     let active = 0
     let maximum = 0
     let releaseFirst!: () => void
@@ -301,13 +305,14 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
       close: vi.fn(async () => undefined),
     } })
 
-    const first = app.request({ currentText: '我长期关注 agent systems' })
-    const second = app.request({ currentText: '我长期关注 databases' })
+    await app.observeContext({ currentText: '保存明确的关注和已有认识' })
+    const first = app.request({ currentText: 'monitor saved interests' })
+    const second = app.request({ currentText: 'monitor saved interests again' })
     await vi.waitFor(() => expect(calls).toBe(1))
     releaseFirst()
     expect(await Promise.all([first, second])).toEqual([
       { status: 'one_link', url: 'https://x.com/example/status/123' },
-      { status: 'business_empty' },
+      { status: 'one_link', url: 'https://x.com/example/status/123' },
     ])
 
     expect(maximum).toBe(1)
@@ -319,6 +324,7 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
     let release!: () => void
     const bothArrived = new Promise<void>(resolve => { release = resolve })
     const model: PersonalFeedModel = {
+      assessContext: vi.fn(async () => ({ status: 'completed' as const, sufficient: true })),
       observeContext: vi.fn(async ({ currentText }) => {
         arrivals += 1
         if (arrivals === 2) release()
@@ -342,71 +348,58 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
     await app.close()
   })
 
-  it('uses explicit opaque continuation tokens instead of hidden conversation identity', async () => {
+  it('keeps raw feedback answers inside the original call without publishing an association', async () => {
     const { app, model, stateDir, observer } = await fixture({ model: {
+      assessContext: vi.fn(async () => ({ status: 'completed' as const, sufficient: true })),
       observeContext: vi.fn(async () => ({ status: 'ignored' as const })),
       judgeCandidate: vi.fn(async () => ({ status: 'not_qualified' as const })),
       interpretFeedback: vi.fn(async ({ currentText }) => currentText.trim() === '不喜欢'
         ? { status: 'needs_input' as const, remaining: { question: '你指的是哪一条，为什么不喜欢？', unresolvedScope: 'target and reason' } }
         : { status: 'completed' as const, sentiment: 'dislike' as const, targetText: 'https://x.com/example/status/123', reason: '标题夸张', remaining: null }),
     } })
-
-    const firstText = '  不喜欢  '
-    const first = await app.processFeedback({ currentText: firstText })
-    expect(first.status).toBe('needs_input')
-    if (first.status !== 'needs_input') throw new Error('unexpected result')
-    expect(first.continuationToken).toMatch(/^[A-Za-z0-9_-]{40,}$/u)
-    expect(JSON.stringify(first)).not.toMatch(/chat|message|session/iu)
-
-    const secondText = '\n就是这条，标题夸张\t'
-    const second = await app.processFeedback({ currentText: secondText, continuationToken: first.continuationToken })
-    expect(second).toEqual({ status: 'completed' })
-    expect(model.interpretFeedback).toHaveBeenLastCalledWith(expect.objectContaining({
-      currentText: secondText,
-      clarification: { originalText: firstText, question: '你指的是哪一条，为什么不喜欢？', unresolvedScope: 'target and reason' },
-    }))
-    const ledger = await readFile(join(stateDir, 'feedback.jsonl'), 'utf8')
-    expect(ledger).toContain('https://x.com/example/status/123')
-    await expect(readFile(join(stateDir, 'pending-feedback.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
-    vi.mocked(model.interpretFeedback).mockClear()
-    const repeated = await app.processFeedback({ currentText: secondText, continuationToken: first.continuationToken })
-    expect(repeated.status).toBe('incomplete')
-    if (repeated.status !== 'incomplete') throw new Error('expected incomplete')
-    expect(repeated.stage).toBe('feedback_interpretation')
-    expect(model.interpretFeedback).not.toHaveBeenCalled()
-    await expect(readFile(join(stateDir, 'pending-feedback.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
-    expect(await readFile(join(stateDir, 'feedback.jsonl'), 'utf8')).toBe(ledger)
-    await app.close()
-    expect(observer.close).toHaveBeenCalled()
+    try {
+      const firstText = '  不喜欢  '
+      const answerText = '\n就是这条，标题夸张\t'
+      const ask = vi.fn(async () => ({ action: 'accept' as const, text: answerText }))
+      const result = await app.processFeedback({ currentText: firstText }, { mode: 'interactive', ask })
+      expect(result).toEqual({ status: 'completed' })
+      expect(JSON.stringify(result)).not.toMatch(/token|chat|message|session/iu)
+      expect(ask).toHaveBeenCalledTimes(1)
+      expect(model.interpretFeedback).toHaveBeenLastCalledWith(expect.objectContaining({
+        currentText: answerText,
+        clarification: { originalText: firstText, question: '你指的是哪一条，为什么不喜欢？', unresolvedScope: 'target and reason' },
+      }))
+      const ledger = await readFile(join(stateDir, 'feedback.jsonl'), 'utf8')
+      expect(ledger.trim().split('\n')).toHaveLength(1)
+      expect(ledger).toContain('https://x.com/example/status/123')
+      await expect(readFile(join(stateDir, 'pending-feedback.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+      expect(observer.observe).not.toHaveBeenCalled()
+    } finally { await app.close(); await rm(stateDir, { recursive: true, force: true }) }
   })
 
-  it('recognizes a previously appended continuation event without duplicating it', async () => {
-    const { app, stateDir } = await fixture({ model: {
+  it('settles one answer only once without duplicate feedback events', async () => {
+    const { app, model, stateDir } = await fixture({ model: {
+      assessContext: vi.fn(async () => ({ status: 'completed' as const, sufficient: true })),
       observeContext: vi.fn(async () => ({ status: 'ignored' as const })),
       judgeCandidate: vi.fn(async () => ({ status: 'not_qualified' as const })),
       interpretFeedback: vi.fn(async ({ currentText }) => currentText === '不喜欢'
         ? { status: 'needs_input' as const, remaining: { question: '你指的是哪一条，为什么不喜欢？', unresolvedScope: 'target and reason' } }
         : { status: 'completed' as const, sentiment: 'dislike' as const, targetText: 'https://x.com/example/status/123', reason: '标题夸张', remaining: null }),
     } })
-
-    const pending = await app.processFeedback({ currentText: '不喜欢' })
-    if (pending.status !== 'needs_input') throw new Error('expected continuation token')
-    const eventId = `continuation:${createHash('sha256').update(pending.continuationToken).digest('hex')}`
-    await appendFile(join(stateDir, 'feedback.jsonl'), `${JSON.stringify({
-      schemaVersion: 1,
-      id: eventId,
-      sentiment: 'dislike',
-      targetText: 'https://x.com/example/status/123',
-      createdAt: '2026-09-04T00:00:00.000Z',
-    })}\n`)
-
-    await expect(app.processFeedback({
-      currentText: '就是这条，标题夸张',
-      continuationToken: pending.continuationToken,
-    })).resolves.toEqual({ status: 'completed' })
-    const events = (await readFile(join(stateDir, 'feedback.jsonl'), 'utf8')).trim().split('\n')
-    expect(events).toHaveLength(1)
-    await app.close()
+    try {
+      const result = await app.processFeedback({ currentText: '不喜欢' }, {
+        mode: 'interactive',
+        ask: async () => new Promise(resolve => {
+          resolve({ action: 'accept', text: '就是这条，标题夸张' })
+          resolve({ action: 'accept', text: 'a stale second answer' })
+        }),
+      })
+      expect(result).toEqual({ status: 'completed' })
+      expect(model.interpretFeedback).toHaveBeenCalledTimes(2)
+      expect(model.interpretFeedback).toHaveBeenLastCalledWith(expect.objectContaining({ currentText: '就是这条，标题夸张' }))
+      const events = (await readFile(join(stateDir, 'feedback.jsonl'), 'utf8')).trim().split('\n')
+      expect(events).toHaveLength(1)
+    } finally { await app.close(); await rm(stateDir, { recursive: true, force: true }) }
   })
 
   it('durably records only save/unsave and lists current saved state', async () => {
@@ -425,6 +418,7 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
     await app.close()
 
     const model: PersonalFeedModel = {
+      assessContext: vi.fn(async () => ({ status: 'completed' as const, sufficient: true })),
       observeContext: vi.fn(async () => ({ status: 'ignored' })),
       judgeCandidate: vi.fn(async () => ({ status: 'not_qualified' })),
       interpretFeedback: vi.fn(async () => ({ status: 'pass' })),
@@ -447,6 +441,80 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
       'https://x.com/a/status/1',
       'https://x.com/b/status/2',
     ])
+    await app.close()
+  })
+
+  it.each([
+    ['AbortError', 'interaction_cancelled'],
+    ['TimeoutError', 'interaction_timeout'],
+  ] as const)('reports an aborted source observation as shutdown / %s', async (name, reason) => {
+    const observer: XObserver = {
+      observe: vi.fn(async ({ signal }) => {
+        await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+        return { status: 'incomplete', stage: 'source_window', reason: 'observation_failed' }
+      }),
+      close: vi.fn(async () => undefined),
+    }
+    const { app } = await fixture({ observer })
+    const abort = new AbortController()
+    const pending = app.request({ currentText: 'direct discovery' }, { signal: abort.signal })
+    await vi.waitFor(() => expect(observer.observe).toHaveBeenCalled())
+    abort.abort(new DOMException('controlled stop', name))
+    await expect(pending).resolves.toEqual({ status: 'incomplete', stage: 'shutdown', reason })
+    await app.close()
+  })
+
+  it('reports a timed-out candidate judgment as shutdown instead of a judgment fault', async () => {
+    const base = await fixture()
+    await base.app.close()
+    const model = base.model
+    vi.mocked(model.judgeCandidate).mockImplementation(async ({ signal }) => {
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+      return { status: 'incomplete' }
+    })
+    const app = createPersonalFeedApplication({ stateDir: base.stateDir, model, observer: base.observer })
+    const abort = new AbortController()
+    const pending = app.request({ currentText: 'direct discovery' }, { signal: abort.signal })
+    await vi.waitFor(() => expect(model.judgeCandidate).toHaveBeenCalled())
+    abort.abort(new DOMException('controlled deadline', 'TimeoutError'))
+    await expect(pending).resolves.toEqual({ status: 'incomplete', stage: 'shutdown', reason: 'interaction_timeout' })
+    await app.close()
+  })
+
+  it.each([
+    ['observeContext', 'observeContext', 'context_observation'],
+    ['processFeedback', 'interpretFeedback', 'feedback_interpretation'],
+  ] as const)('preserves a local deadline reason from %s model work', async (operation, modelOperation, stage) => {
+    const { app, model } = await fixture()
+    vi.mocked(model[modelOperation]).mockImplementation(async ({ signal }: { signal: AbortSignal }) => {
+      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+      return { status: 'incomplete' } as never
+    })
+    const abort = new AbortController()
+    const pending = app[operation]({ currentText: 'controlled input' }, { signal: abort.signal })
+    await vi.waitFor(() => expect(model[modelOperation]).toHaveBeenCalled())
+    abort.abort(new DOMException('controlled deadline', 'TimeoutError'))
+    await expect(pending).resolves.toEqual({ status: 'incomplete', stage, reason: 'interaction_timeout' })
+    await app.close()
+  })
+
+  it('does not commit a save that is cancelled after it enters the saved queue', async () => {
+    const { app, stateDir } = await fixture()
+    const abort = new AbortController()
+    const pending = app.recordFeedback({ operation: 'save', url: 'https://x.com/cancelled/status/9' }, { signal: abort.signal })
+    abort.abort()
+    await expect(pending).rejects.toMatchObject({ name: 'PersonalFeedClosedError' })
+    await expect(readFile(join(stateDir, 'saved.jsonl'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await app.close()
+  })
+
+  it('does not read the saved ledger after a queued list is cancelled', async () => {
+    const { app, stateDir } = await fixture()
+    await writeFile(join(stateDir, 'saved.jsonl'), '{invalid ledger\n')
+    const abort = new AbortController()
+    const pending = app.listSaved({}, { signal: abort.signal })
+    abort.abort()
+    await expect(pending).rejects.toMatchObject({ name: 'PersonalFeedClosedError' })
     await app.close()
   })
 })

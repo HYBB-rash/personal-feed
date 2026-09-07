@@ -479,6 +479,47 @@ class TestPersonalFeedObserverCli(unittest.TestCase):
                 self.assertNotIn("body", serialized)
                 self.assertNotIn("canary", serialized)
 
+    def test_main_transparently_preserves_verified_partial_faces(self):
+        module = _require_cli(self)
+        partial = {
+            "schemaVersion": 1,
+            "kind": "incomplete",
+            "startedAt": TIMESTAMP,
+            "completedAt": TIMESTAMP,
+            "surfaces": [
+                {
+                    "kind": "partial",
+                    "surface": "for_you",
+                    "surfaceOrdinal": 0,
+                    "startedAt": TIMESTAMP,
+                    "completedAt": TIMESTAMP,
+                    "occurrences": [{
+                        "sourceUrl": "https://x.com/alice/status/901",
+                        "authorHandle": "alice",
+                        "publishedAt": TIMESTAMP,
+                        "occurrenceOrdinal": 0,
+                        "capturedAt": TIMESTAMP,
+                        "body": {"kind": "sufficient", "text": "verified original"},
+                    }],
+                },
+                {"kind": "failed", "surface": "following", "surfaceOrdinal": 1},
+                {"kind": "unknown", "surface": "explore", "surfaceOrdinal": 2},
+            ],
+        }
+        stdout = io.StringIO()
+        rc = module.main(
+            [VALID_REQUEST.decode("utf-8")],
+            stdout,
+            observer=lambda _deadline: partial,
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(_compact_line(self, stdout), {
+            **partial,
+            "requestId": REQUEST_ID,
+            "cutoff": TIMESTAMP,
+            "shanghaiDay": SHANGHAI_DAY,
+        })
+
     def test_default_main_composes_production_observer(self):
         module = _require_cli(self)
         observer_parameter = inspect.signature(module.main).parameters["observer"]

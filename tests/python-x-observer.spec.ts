@@ -12,6 +12,71 @@ async function waitForFile(path: string): Promise<string> {
 }
 
 describe('Python X observer adapter', () => {
+  it('keeps sufficient originals when another original is insufficient', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'personal-feed-partial-material-'))
+    const script = join(directory, 'fake-observer.mjs')
+    await writeFile(script, `
+const request = JSON.parse(process.argv[2]);
+const occurrence = (id, body, occurrenceOrdinal) => ({sourceUrl: \`https://x.com/alice/status/\${id}\`, authorHandle: 'alice', publishedAt: request.cutoff, occurrenceOrdinal, capturedAt: request.cutoff, body});
+const surfaces = [
+  {kind: 'complete', surface: 'for_you', surfaceOrdinal: 0, startedAt: request.cutoff, completedAt: request.cutoff, occurrences: [occurrence('801', {kind: 'insufficient', reason: 'empty'}, 0), occurrence('802', {kind: 'sufficient', text: 'verified original'}, 1)]},
+  {kind: 'natural_zero', surface: 'following', surfaceOrdinal: 1, startedAt: request.cutoff, completedAt: request.cutoff, occurrences: []},
+  {kind: 'natural_zero', surface: 'explore', surfaceOrdinal: 2, startedAt: request.cutoff, completedAt: request.cutoff, occurrences: []},
+];
+process.stdout.write(JSON.stringify({schemaVersion: 1, requestId: request.requestId, cutoff: request.cutoff, shanghaiDay: request.shanghaiDay, kind: 'complete', startedAt: request.cutoff, completedAt: request.cutoff, surfaces}) + '\\n');
+`)
+    const observer = createPythonXObserver({ pythonBin: process.execPath, observerCliPath: script, timeoutMs: 2_000 })
+    try {
+      await expect(observer.observe({
+        requestId: 'pf:00000000000000000000000000000001',
+        cutoff: '2026-09-04T00:00:00.000Z',
+        shanghaiDay: '2026-09-04',
+        signal: new AbortController().signal,
+      })).resolves.toEqual({
+        status: 'incomplete',
+        stage: 'source_window',
+        reason: 'material_insufficient',
+        candidates: [{
+          stableId: 'x-status:802',
+          canonicalUrl: 'https://x.com/alice/status/802',
+          body: 'verified original',
+          authorHandle: 'alice',
+          publishedAt: '2026-09-04T00:00:00.000Z',
+          surface: 'for_you',
+        }],
+        limitations: ['material_insufficient'],
+      })
+    } finally {
+      await observer.close()
+    }
+  })
+
+  it('rejects an incomplete package that smuggles an occurrence through a failed face', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'personal-feed-malicious-partial-'))
+    const script = join(directory, 'fake-observer.mjs')
+    await writeFile(script, `
+const request = JSON.parse(process.argv[2]);
+const occurrence = {sourceUrl: 'https://x.com/alice/status/803', authorHandle: 'alice', publishedAt: request.cutoff, occurrenceOrdinal: 0, capturedAt: request.cutoff, body: {kind: 'sufficient', text: 'untrusted package'}};
+const surfaces = [
+  {kind: 'partial', surface: 'for_you', surfaceOrdinal: 0, startedAt: request.cutoff, completedAt: request.cutoff, occurrences: [occurrence]},
+  {kind: 'failed', surface: 'following', surfaceOrdinal: 1, occurrences: [occurrence]},
+  {kind: 'unknown', surface: 'explore', surfaceOrdinal: 2},
+];
+process.stdout.write(JSON.stringify({schemaVersion: 1, requestId: request.requestId, cutoff: request.cutoff, shanghaiDay: request.shanghaiDay, kind: 'incomplete', startedAt: request.cutoff, completedAt: request.cutoff, surfaces}) + '\\n');
+`)
+    const observer = createPythonXObserver({ pythonBin: process.execPath, observerCliPath: script, timeoutMs: 2_000 })
+    try {
+      await expect(observer.observe({
+        requestId: 'pf:00000000000000000000000000000001',
+        cutoff: '2026-09-04T00:00:00.000Z',
+        shanghaiDay: '2026-09-04',
+        signal: new AbortController().signal,
+      })).resolves.toEqual({ status: 'incomplete', stage: 'source_window', reason: 'observation_failed' })
+    } finally {
+      await observer.close()
+    }
+  })
+
   it('reports an incomplete window when an observed original has insufficient body', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'personal-feed-insufficient-'))
     const script = join(directory, 'fake-observer.mjs')
@@ -34,16 +99,16 @@ process.stdout.write(JSON.stringify({schemaVersion: 1, requestId: request.reques
     }
   })
 
-  it('distinguishes partial observation from an observation that failed before any page completed', async () => {
+  it('distinguishes an incomplete closed window from an observation that failed before any page completed', async () => {
     const cases = [
       {
-        name: 'partial observation',
+        name: 'incomplete closed window',
         result: {
           kind: 'incomplete',
           surfaces: [
-            { surface: 'for_you', surfaceOrdinal: 0, kind: 'partial' },
-            { surface: 'following', surfaceOrdinal: 1, kind: 'unknown' },
-            { surface: 'explore', surfaceOrdinal: 2, kind: 'failed' },
+            { surface: 'for_you', surfaceOrdinal: 0, kind: 'natural_zero', startedAt: '2026-09-04T00:00:00.000Z', completedAt: '2026-09-04T00:00:00.000Z', occurrences: [] },
+            { surface: 'following', surfaceOrdinal: 1, kind: 'natural_zero', startedAt: '2026-09-04T00:00:00.000Z', completedAt: '2026-09-04T00:00:00.000Z', occurrences: [] },
+            { surface: 'explore', surfaceOrdinal: 2, kind: 'natural_zero', startedAt: '2026-09-04T00:00:00.000Z', completedAt: '2026-09-04T00:00:00.000Z', occurrences: [] },
           ],
         },
         reason: 'partial_observation',
@@ -59,18 +124,6 @@ process.stdout.write(JSON.stringify({schemaVersion: 1, requestId: request.reques
           ],
         },
         reason: 'observation_failed',
-      },
-      {
-        name: 'declared incomplete despite complete-looking pages',
-        result: {
-          kind: 'incomplete',
-          surfaces: [
-            { surface: 'for_you', surfaceOrdinal: 0, kind: 'complete' },
-            { surface: 'following', surfaceOrdinal: 1, kind: 'natural_zero' },
-            { surface: 'explore', surfaceOrdinal: 2, kind: 'complete' },
-          ],
-        },
-        reason: 'partial_observation',
       },
     ] as const
 
@@ -387,7 +440,22 @@ sys.stdout.write(output.getvalue())
         }],
       },
       empty: { status: 'complete', candidates: [] },
-      partial: { status: 'incomplete', stage: 'source_window', reason: 'partial_observation' },
+      partial: {
+        status: 'incomplete',
+        stage: 'source_window',
+        reason: 'partial_observation',
+        candidates: [{
+          stableId: 'x-status:902', canonicalUrl: 'https://x.com/alice/status/902', body: 'production partial',
+          authorHandle: 'alice', publishedAt: '2026-09-01T00:00:00.000Z', surface: 'for_you',
+        }, {
+          stableId: 'x-status:902', canonicalUrl: 'https://x.com/alice/status/902', body: 'production partial',
+          authorHandle: 'alice', publishedAt: '2026-09-01T00:00:00.000Z', surface: 'following',
+        }, {
+          stableId: 'x-status:902', canonicalUrl: 'https://x.com/alice/status/902', body: 'production partial',
+          authorHandle: 'alice', publishedAt: '2026-09-01T00:00:00.000Z', surface: 'explore',
+        }],
+        limitations: ['partial_observation'],
+      },
     } as const
     for (const mode of ['success', 'empty', 'partial'] as const) {
       const wrapper = join(directory, `${mode}-wrapper.py`)

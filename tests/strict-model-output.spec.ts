@@ -78,3 +78,15 @@ describe('explicit strict model output', () => {
         canonicalUrl: 'https://x.com/fixture/status/1', body: 'Fixture source', authorHandle: 'fixture', publishedAt: '2026-09-05T23:59:00.000Z' } })).resolves.toEqual({ status: 'qualified' })
   })
 })
+
+it('constrains read-only assessment to two closed results with no fact or question output', async () => {
+  const result = { status: 'completed', sufficient: false }
+  const fetch = vi.fn<typeof globalThis.fetch>(async () => wire({ content: null, tool_calls: [call(result)] }))
+  vi.stubGlobal('fetch', fetch)
+  expect(await createOpenAICompatiblePersonalFeedModel(config).assessContext({ requestText: 'Scheduled Feed', activeFacts: [fact], signal: new AbortController().signal })).toEqual(result)
+  const body = JSON.parse(fetch.mock.calls[0]![1]!.body as string)
+  const variants = body.tools[0].function.parameters.properties.result.anyOf
+  expect(variants).toHaveLength(2)
+  expect(variants.map((v: any) => v.required)).toEqual([['status'], ['status', 'sufficient']])
+  for (const variant of variants) expect(variant.additionalProperties).toBe(false)
+})

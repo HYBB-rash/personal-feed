@@ -110,20 +110,14 @@ function parseObservation(raw: string, request: {
     return incomplete('observation_failed')
   }
   if (!validSurfaces(value.surfaces, value.kind)) return incomplete('observation_failed')
-  if (value.kind === 'incomplete') {
-    const partial = value.surfaces.some(face => face.kind === 'partial' || face.kind === 'complete' || face.kind === 'natural_zero')
-    return incomplete(partial ? 'partial_observation' : 'observation_failed')
-  }
-
   const candidates: XCandidate[] = []
-  let insufficient = false
+  let materialInsufficient = false
   for (const face of value.surfaces) {
-    if (face.kind === 'natural_zero') continue
     for (const rawOccurrence of face.occurrences ?? []) {
       const occurrence = rawOccurrence as Record<string, unknown>
       const body = occurrence.body as Record<string, unknown>
       if (body.kind === 'insufficient') {
-        insufficient = true
+        materialInsufficient = true
         continue
       }
       const identifier = /^https:\/\/x\.com\/[a-z0-9_]{1,15}\/status\/([1-9]\d*)$/u.exec(occurrence.sourceUrl as string)?.[1]
@@ -137,7 +131,25 @@ function parseObservation(raw: string, request: {
       }))
     }
   }
-  return insufficient ? incomplete('material_insufficient') : Object.freeze({ status: 'complete', candidates: Object.freeze(candidates) })
+  const partialObservation = value.kind === 'incomplete'
+    && value.surfaces.some(face => face.kind === 'partial' || face.kind === 'complete' || face.kind === 'natural_zero')
+  if (candidates.length === 0) {
+    if (partialObservation) return incomplete('partial_observation')
+    if (materialInsufficient) return incomplete('material_insufficient')
+    return value.kind === 'incomplete'
+      ? incomplete('observation_failed')
+      : Object.freeze({ status: 'complete', candidates: Object.freeze(candidates) })
+  }
+  const limitations = [
+    ...(partialObservation ? ['partial_observation' as const] : []),
+    ...(materialInsufficient ? ['material_insufficient' as const] : []),
+  ]
+  if (limitations.length === 0) return Object.freeze({ status: 'complete', candidates: Object.freeze(candidates) })
+  return incompleteWithCandidates(
+    partialObservation ? 'partial_observation' : 'material_insufficient',
+    candidates,
+    limitations,
+  )
 }
 
 type ParsedSurface = Record<string, unknown> & {
@@ -153,7 +165,16 @@ function validSurfaces(value: readonly unknown[], overallKind: unknown): value i
     if (!isRecord(rawFace) || !isSurface(rawFace.surface) || rawFace.surface !== ['for_you', 'following', 'explore'][index]
       || rawFace.surfaceOrdinal !== index || !Number.isSafeInteger(rawFace.surfaceOrdinal) || typeof rawFace.kind !== 'string') return false
     if (overallKind === 'incomplete') {
-      if ('occurrences' in rawFace || !['complete', 'natural_zero', 'partial', 'failed', 'unknown'].includes(rawFace.kind)) return false
+      if (!['complete', 'natural_zero', 'partial', 'failed', 'unknown'].includes(rawFace.kind)) return false
+      if (rawFace.kind === 'failed' || rawFace.kind === 'unknown') {
+        if ('occurrences' in rawFace) return false
+        continue
+      }
+      if (rawFace.occurrences !== undefined && !Array.isArray(rawFace.occurrences)) return false
+      if (rawFace.kind === 'natural_zero' && Array.isArray(rawFace.occurrences) && rawFace.occurrences.length !== 0) return false
+      for (const [occurrenceIndex, rawOccurrence] of (rawFace.occurrences ?? []).entries()) {
+        if (!validOccurrence(rawOccurrence, occurrenceIndex)) return false
+      }
       continue
     }
     if (!Array.isArray(rawFace.occurrences)) return false
@@ -182,6 +203,20 @@ function validOccurrence(value: unknown, index: number): value is Record<string,
 
 function incomplete(reason: 'material_insufficient' | 'partial_observation' | 'observation_failed'): XObservation {
   return Object.freeze({ status: 'incomplete', stage: 'source_window', reason })
+}
+
+function incompleteWithCandidates(
+  reason: 'material_insufficient' | 'partial_observation',
+  candidates: readonly XCandidate[],
+  limitations: readonly ('material_insufficient' | 'partial_observation')[],
+): XObservation {
+  return Object.freeze({
+    status: 'incomplete',
+    stage: 'source_window',
+    reason,
+    candidates: Object.freeze(candidates),
+    limitations: Object.freeze(limitations),
+  })
 }
 
 function isSurface(value: unknown): value is 'for_you' | 'following' | 'explore' {

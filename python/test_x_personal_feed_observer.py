@@ -298,12 +298,21 @@ def _assert_utc_z(case, value):
 def _assert_incomplete_body_free(case, result, canary=None):
     case.assertEqual(result["kind"], "incomplete")
     for face in result["surfaces"]:
-        case.assertEqual(set(face), {"surface", "surfaceOrdinal", "kind"})
-    serialized = json.dumps(result, ensure_ascii=False)
-    for forbidden in ("body", "text", "sourceUrl", "authorHandle", "publishedAt"):
-        case.assertNotIn(forbidden, serialized)
-    if canary is not None:
-        case.assertNotIn(canary, serialized)
+        if face["kind"] in {"failed", "unknown"}:
+            case.assertEqual(set(face), {"surface", "surfaceOrdinal", "kind"})
+            continue
+        case.assertEqual(
+            set(face),
+            {"kind", "surface", "surfaceOrdinal", "startedAt", "completedAt", "occurrences"},
+        )
+        case.assertIsInstance(face["occurrences"], list)
+        if face["kind"] == "natural_zero":
+            case.assertEqual(face["occurrences"], [])
+        for occurrence in face["occurrences"]:
+            case.assertEqual(
+                set(occurrence),
+                {"sourceUrl", "body", "occurrenceOrdinal", "capturedAt", "authorHandle", "publishedAt"},
+            )
 
 
 class TestPersonalFeedObserver(unittest.TestCase):
@@ -348,8 +357,7 @@ class TestPersonalFeedObserver(unittest.TestCase):
             self.assertLessEqual(call["timeout_seconds"] * 1000, remaining_ms)
             self.assertIn(call["action"], {"navigate", "probe", "snapshot", "expand", "scroll"})
         self.assertEqual(result["kind"], "incomplete")
-        for face in result["surfaces"]:
-            self.assertEqual(set(face), {"surface", "surfaceOrdinal", "kind"})
+        _assert_incomplete_body_free(self, result)
 
     def test_observe_emits_exact_complete_schema_and_byte_body_union(self):
         module = _require_observer(self)
@@ -589,8 +597,7 @@ class TestPersonalFeedObserver(unittest.TestCase):
                 if name == "complete":
                     self.assertTrue(all(faces[s]["kind"] == "complete" for s in SURFACES))
                 if overall_kind == "incomplete":
-                    for face in result["surfaces"]:
-                        self.assertEqual(set(face), {"surface", "surfaceOrdinal", "kind"})
+                    _assert_incomplete_body_free(self, result)
 
         candidate_empty_clock = _FakeClock()
         candidate_empty_browser = _FakeBrowser(candidate_empty_clock)
@@ -787,8 +794,7 @@ class TestPersonalFeedObserver(unittest.TestCase):
                 evaluator = _FakeEvaluator(clock, plans=plans)
                 result = _invoke(module, clock, browser, lock, evaluator)
                 self.assertEqual(result["kind"], "incomplete")
-                for face in result["surfaces"]:
-                    self.assertEqual(set(face), {"surface", "surfaceOrdinal", "kind"})
+                _assert_incomplete_body_free(self, result)
                 if name == "partial_after_items":
                     self.assertEqual(_surface_map(self, result)["for_you"]["kind"], "partial")
                 elif name == "failed_before_items":
@@ -899,8 +905,12 @@ class TestPersonalFeedObserver(unittest.TestCase):
                 result = _invoke(module, clock, browser, lock, evaluator, deadline)
                 _assert_incomplete_body_free(self, result)
                 touched_surfaces = {call["surface"] for call in evaluator.calls}
-                self.assertNotIn("following", touched_surfaces)
-                self.assertNotIn("explore", touched_surfaces)
+                if name in {"navigation_error", "evaluate_error"}:
+                    self.assertIn("following", touched_surfaces)
+                    self.assertIn("explore", touched_surfaces)
+                else:
+                    self.assertNotIn("following", touched_surfaces)
+                    self.assertNotIn("explore", touched_surfaces)
                 if name == "deadline_exhausted":
                     self.assertEqual(evaluator.calls, [])
                 self.assertNotIn("body", json.dumps(result, ensure_ascii=False))
@@ -914,8 +924,8 @@ class TestPersonalFeedObserver(unittest.TestCase):
         canary = "LATE_CANARY_BODY"
         item = _body_item("https://x.com/alice/status/601", body=canary)
         matrix = (
-            ("fy_navigation_failed", ["failed", "unknown", "unknown"], {("for_you", "navigate"): RuntimeError("navigation_failed")}, None, None),
-            ("fy_complete_following_navigation_failed", ["complete", "failed", "unknown"], {("following", "navigate"): RuntimeError("navigation_failed")}, None, None),
+            ("fy_navigation_failed", ["failed", "complete", "complete"], {("for_you", "navigate"): RuntimeError("navigation_failed")}, None, None),
+            ("fy_complete_following_navigation_failed", ["complete", "failed", "complete"], {("following", "navigate"): RuntimeError("navigation_failed")}, None, None),
             ("proof_mismatch_and_closed_tail", ["unknown", "unknown", "unknown"], {}, {
                 "pathname": "/notifications", "selectedHomeTabOrdinal": 0, "exploreRoot": False,
             }, None),
@@ -944,12 +954,14 @@ class TestPersonalFeedObserver(unittest.TestCase):
                 _assert_incomplete_body_free(self, result, canary=canary)
                 self.assertEqual([face["kind"] for face in result["surfaces"]], expected_kinds)
                 touched = {call["surface"] for call in evaluator.calls}
-                first_nonclosed = expected_kinds.index(next(kind for kind in expected_kinds if kind != "complete"))
-                self.assertEqual(
-                    touched.intersection(SURFACES[first_nonclosed + 1:]),
-                    set(),
-                    "no evaluator call is allowed after the first non-closed surface",
-                )
+                if exhaust_on:
+                    self.assertEqual(
+                        touched.intersection(SURFACES[1:]),
+                        set(),
+                        "the total deadline stops later surfaces",
+                    )
+                else:
+                    self.assertTrue(touched.intersection(SURFACES[1:]))
                 for call in evaluator.calls:
                     remaining_ms = deadline - call["at_ms"]
                     self.assertGreater(call["timeout_seconds"], 0)
@@ -962,8 +974,8 @@ class TestPersonalFeedObserver(unittest.TestCase):
             showMore=True,
         )
         expand_cases = (
-            ("expand_error_without_trusted_occurrence", ["failed", "unknown", "unknown"], [expand_placeholder]),
-            ("expand_error_after_trusted_occurrence", ["partial", "unknown", "unknown"], [item, expand_placeholder]),
+            ("expand_error_without_trusted_occurrence", ["failed", "natural_zero", "natural_zero"], [expand_placeholder]),
+            ("expand_error_after_trusted_occurrence", ["partial", "natural_zero", "natural_zero"], [item, expand_placeholder]),
         )
         for name, expected_kinds, items in expand_cases:
             with self.subTest(expand_matrix_case=name):
@@ -1013,8 +1025,84 @@ class TestPersonalFeedObserver(unittest.TestCase):
                     self.assertTrue(expand_indexes and expand_indexes[0] > snapshot_indexes[1])
                 self.assertEqual(
                     {call["surface"] for call in evaluator.calls if call["surface"] != "for_you"},
-                    set(),
+                    {"following", "explore"},
                 )
+
+    def test_observe_keeps_verified_faces_and_continues_after_a_local_failure(self):
+        module = _require_observer(self)
+        cases = (
+            ("later_surface_fails", "following", "failed"),
+            ("first_surface_becomes_partial", "for_you", "partial"),
+        )
+        for name, failing_surface, expected_kind in cases:
+            with self.subTest(case=name):
+                clock = _FakeClock()
+                browser = _FakeBrowser(clock)
+                lock = _FakeLock()
+                first = _body_item("https://x.com/alice/status/701", body="verified first")
+                later = _body_item("https://x.com/bob/status/702", author="bob", body="verified later")
+                plans = _plans_for_snapshot({"items": [later], "cards": [later], "explicitEmpty": False})
+                if name == "later_surface_fails":
+                    plans[("for_you", "snapshot")] = [{"items": [first], "cards": [first], "explicitEmpty": False}]
+                    plans[("following", "snapshot")] = [RuntimeError("following_snapshot_failed")]
+                else:
+                    plans[("for_you", "snapshot")] = [
+                        {"items": [first], "cards": [first], "explicitEmpty": False},
+                        RuntimeError("first_snapshot_failed"),
+                    ]
+                evaluator = _FakeEvaluator(clock, plans=plans)
+
+                result = _invoke(module, clock, browser, lock, evaluator)
+                faces = _surface_map(self, result)
+
+                self.assertEqual(result["kind"], "incomplete")
+                self.assertEqual(faces[failing_surface]["kind"], expected_kind)
+                self.assertEqual(
+                    faces["for_you"]["occurrences"][0]["body"],
+                    {"kind": "sufficient", "text": "verified first"},
+                )
+                if failing_surface == "following":
+                    self.assertNotIn("occurrences", faces["following"])
+                else:
+                    self.assertEqual(
+                        faces["following"]["occurrences"][0]["body"],
+                        {"kind": "sufficient", "text": "verified later"},
+                    )
+                self.assertTrue(any(
+                    call["surface"] == "explore" and call["action"] == "snapshot"
+                    for call in evaluator.calls
+                ))
+                for face in result["surfaces"]:
+                    if face["kind"] in {"failed", "unknown"}:
+                        self.assertNotIn("occurrences", face)
+
+    def test_observe_continues_after_navigation_or_probe_failure(self):
+        module = _require_observer(self)
+        for action, expected_kind in (("navigate", "failed"), ("probe", "failed")):
+            with self.subTest(action=action):
+                clock = _FakeClock()
+                browser = _FakeBrowser(clock)
+                lock = _FakeLock()
+                later = _body_item("https://x.com/bob/status/703", author="bob", body="verified after entry failure")
+                evaluator = _FakeEvaluator(
+                    clock,
+                    plans=_plans_for_snapshot({"items": [later], "cards": [later], "explicitEmpty": False}),
+                    error_actions={("for_you", action)},
+                )
+                result = _invoke(module, clock, browser, lock, evaluator)
+                faces = _surface_map(self, result)
+
+                self.assertEqual(result["kind"], "incomplete")
+                self.assertEqual(faces["for_you"]["kind"], expected_kind)
+                self.assertNotIn("occurrences", faces["for_you"])
+                self.assertEqual(
+                    faces["following"]["occurrences"][0]["body"],
+                    {"kind": "sufficient", "text": "verified after entry failure"},
+                )
+                self.assertTrue(any(
+                    call["surface"] == "explore" and call["action"] == "snapshot"
+                    for call in evaluator.calls
+                ))
 
     def test_run_cli_binds_verified_request_identity_and_fails_closed(self):
         module = _require_observer(self)

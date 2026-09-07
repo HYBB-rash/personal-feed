@@ -2,6 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
 import { z } from 'zod'
+import { PersonalFeedInputError, PersonalFeedStorageError } from '../errors.ts'
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
+import type { InteractionOptions, InteractionReply } from '../interaction.ts'
 import type { PersonalFeedApplicationPort, SafeLogger } from './contracts.ts'
 
 export const PERSONAL_FEED_TOOL_NAMES = Object.freeze([
@@ -14,45 +17,35 @@ export const PERSONAL_FEED_TOOL_NAMES = Object.freeze([
 
 const currentText = z.string().min(1).max(100_000)
 const referenceText = z.string().min(1).max(16_000).optional()
-const continuationToken = z.string().regex(/^[A-Za-z0-9_-]{43}$/u)
-const questionHandoff = {
-  question: z.string().min(1).optional(),
-  continuationToken: continuationToken.optional(),
-}
-const feedVariants = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('one_link'), url: z.string().url() }).strict(),
+const interactionReason = z.enum(['interaction_unavailable', 'interaction_declined', 'interaction_cancelled', 'interaction_timeout'])
+const feedLimitation = z.enum(['partial_observation', 'material_insufficient', 'judgement_incomplete'])
+const feedOutput = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('one_link'),
+    url: z.string().url(),
+    limitations: z.array(feedLimitation).min(1).refine(value => new Set(value).size === value.length).optional(),
+  }).strict(),
   z.object({ status: z.literal('business_empty') }).strict(),
   z.object({
     status: z.literal('incomplete'),
     stage: z.enum(['context_observation', 'personal_context', 'source_window', 'judgement_execution', 'conflict', 'shutdown']),
-    reason: z.enum(['observation_failed', 'partial_observation', 'material_insufficient']).optional(),
+    reason: z.union([z.enum(['observation_failed', 'partial_observation', 'material_insufficient', 'exploration_not_ready']), interactionReason]).optional(),
   }).strict(),
-])
-const feedOutput = feedVariants.superRefine(checkSourceReason)
-const requestOutput = z.discriminatedUnion('status', [
-  feedVariants.options[0].extend(questionHandoff),
-  feedVariants.options[1].extend(questionHandoff),
-  feedVariants.options[2].extend(questionHandoff),
-]).superRefine(checkQuestionPair).superRefine(checkSourceReason)
-const updateHandoff = { ...questionHandoff, feed: feedOutput.optional() }
+]).superRefine(checkReason)
+const requestOutput = feedOutput
 const observeOutput = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('applied'), appliedCount: z.number().int().nonnegative(), ...updateHandoff }).strict(),
-  z.object({ status: z.literal('ignored'), ...updateHandoff }).strict(),
-  z.object({ status: z.literal('already_observed'), ...updateHandoff }).strict(),
-  z.object({ status: z.literal('incomplete'), stage: z.enum(['context_observation', 'conflict']), ...updateHandoff }).strict(),
-]).superRefine(checkQuestionPair)
+  z.object({ status: z.literal('applied'), appliedCount: z.number().int().nonnegative() }).strict(),
+  z.object({ status: z.literal('ignored') }).strict(),
+  z.object({ status: z.literal('already_observed') }).strict(),
+  z.object({ status: z.literal('incomplete'), stage: z.enum(['context_observation', 'conflict']), reason: interactionReason.optional() }).strict(),
+]).superRefine(checkReason)
 const feedbackOutput = z.discriminatedUnion('status', [
-  z.object({ status: z.literal('pass'), ...updateHandoff }).strict(),
-  z.object({ status: z.literal('completed'), ...updateHandoff }).strict(),
-  z.object({ status: z.literal('discarded'), ...updateHandoff }).strict(),
-  z.object({
-    status: z.literal('needs_input'),
-    question: z.string().min(1),
-    continuationToken,
-    feed: feedOutput.optional(),
-  }).strict(),
-  z.object({ status: z.literal('incomplete'), stage: z.enum(['feedback_interpretation', 'feedback_commit', 'conflict']), ...updateHandoff }).strict(),
-]).superRefine(checkQuestionPair)
+  z.object({ status: z.literal('pass') }).strict(),
+  z.object({ status: z.literal('completed') }).strict(),
+  z.object({ status: z.literal('discarded') }).strict(),
+  z.object({ status: z.literal('needs_input'), question: z.string().min(1) }).strict(),
+  z.object({ status: z.literal('incomplete'), stage: z.enum(['feedback_interpretation', 'feedback_commit', 'conflict']), reason: interactionReason.optional() }).strict(),
+]).superRefine(checkReason)
 const recordOutput = z.discriminatedUnion('status', [
   z.object({ status: z.literal('saved') }).strict(),
   z.object({ status: z.literal('unsaved') }).strict(),
@@ -69,12 +62,14 @@ const listOutput = z.object({ status: z.literal('completed'), items: z.array(sav
 
 type OutputSchema = z.ZodType<Record<string, unknown>>
 
-/** Create a fresh MCP server for one stateless Streamable HTTP request. */
+/** Create an MCP server for one in-memory protocol connection. */
 export function createPersonalFeedMcpServer(options: {
   readonly application: PersonalFeedApplicationPort
   readonly toolTimeoutMs: number
   readonly logger?: SafeLogger
   readonly track: <T>(task: Promise<T>, abort: AbortController) => Promise<T>
+  readonly terminateRequest?: (requestId: string | number) => void
+  readonly releaseRequest?: (requestId: string | number) => void
 }): McpServer {
   const server = new McpServer(
     { name: 'personal-feed', version: '0.1.0' },
@@ -88,26 +83,23 @@ export function createPersonalFeedMcpServer(options: {
     invoke: (input, context) => options.application.request(input, context),
   })
   register(server, options, 'observe_context', {
-    description: '观察用户直接表达的长期兴趣、已有认识或个人信息澄清回答；当前问答有 continuationToken 时原样传回，不自行再请求 Feed。',
-    inputSchema: z.object({ currentText, continuationToken: continuationToken.optional() }).strict(),
+    description: '观察用户直接表达的长期兴趣或已有认识；必要问答在本次调用内完成，不自行再请求 Feed。',
+    inputSchema: z.object({ currentText }).strict(),
     outputSchema: observeOutput,
     invoke: (input, context) => options.application.observeContext({
       currentText: input.currentText,
-      ...(input.continuationToken === undefined ? {} : { continuationToken: input.continuationToken }),
     }, context),
   })
   register(server, options, 'process_feedback', {
-    description: '处理用户对 Feed 的反馈；如果需要追问，原样传回 continuationToken。',
+    description: '处理用户对 Feed 的反馈；必要问答在本次调用内完成。',
     inputSchema: z.object({
       currentText,
       referenceText,
-      continuationToken: continuationToken.optional(),
     }).strict(),
     outputSchema: feedbackOutput,
     invoke: (input, context) => options.application.processFeedback({
       currentText: input.currentText,
       ...(input.referenceText === undefined ? {} : { referenceText: input.referenceText }),
-      ...(input.continuationToken === undefined ? {} : { continuationToken: input.continuationToken }),
     }, context),
   })
   register(server, options, 'record_feedback', {
@@ -150,7 +142,7 @@ function register<Input extends Record<string, unknown>>(
     readonly description: string
     readonly inputSchema: z.ZodType<Input>
     readonly outputSchema: OutputSchema
-    readonly invoke: (input: Input, context: { signal: AbortSignal }) => Promise<unknown>
+    readonly invoke: (input: Input, context: InteractionOptions & { signal: AbortSignal }) => Promise<unknown>
   },
 ): void {
   server.registerTool(operation, {
@@ -160,14 +152,54 @@ function register<Input extends Record<string, unknown>>(
     const started = performance.now()
     const requestId = randomUUID()
     const abort = new AbortController()
-    const timeout = setTimeout(() => abort.abort(new Error('tool timeout')), options.toolTimeoutMs)
-    const onClientAbort = () => abort.abort(extra.signal.reason)
+    let timedOut = false
+    let rejectDeadline: ((reason: Error) => void) | undefined
+    const deadline = new Promise<never>((_resolve, reject) => { rejectDeadline = reject })
+    const transportTermination = operation === 'record_feedback' || operation === 'list_saved'
+    const timeout = setTimeout(() => {
+      timedOut = true
+      const reason = new DOMException('tool timeout', 'TimeoutError')
+      abort.abort(reason)
+      if (transportTermination) options.terminateRequest?.(extra.requestId)
+      rejectDeadline?.(reason)
+    }, options.toolTimeoutMs)
+    const onClientAbort = () => {
+      abort.abort(extra.signal.reason)
+      rejectDeadline?.(extra.signal.reason instanceof Error ? extra.signal.reason : new Error('client cancelled'))
+    }
     extra.signal.addEventListener('abort', onClientAbort, { once: true })
+    if (extra.signal.aborted) onClientAbort()
     try {
-      const task = definition.invoke(input as Input, { signal: abort.signal })
-      const untrustedResult = await options.track(task, abort)
+      const header = extra.requestInfo?.headers['personal-feed-mode']
+      if (header !== undefined && header !== 'background' && header !== 'interactive') throw new PersonalFeedInputError('invalid interaction mode')
+      const mode = header ?? 'background'
+      const ask = async (question: string, signal: AbortSignal): Promise<InteractionReply> => {
+        const combined = AbortSignal.any([signal, abort.signal])
+        if (combined.aborted) return { action: timedOut ? 'timeout' : 'cancel' }
+        if (!server.server.getClientCapabilities()?.elicitation?.form) return { action: 'unavailable' }
+        const remaining = Math.max(1, options.toolTimeoutMs - (performance.now() - started))
+        try {
+          const reply = await server.server.elicitInput({
+            mode: 'form', message: question,
+            requestedSchema: { type: 'object', properties: { answer: { type: 'string', title: '回答', minLength: 1, maxLength: 100_000 } }, required: ['answer'] },
+          }, { relatedRequestId: extra.requestId, signal: combined, timeout: remaining })
+          if (reply.action !== 'accept') return { action: reply.action }
+          const text = reply.content?.answer
+          if (typeof text !== 'string' || text.trim().length === 0 || text.length > 100_000) throw new PersonalFeedInputError('invalid answer')
+          return { action: 'accept', text }
+        } catch (error) {
+          if (combined.aborted) return { action: timedOut ? 'timeout' : 'cancel' }
+          if (error instanceof McpError && error.code === ErrorCode.RequestTimeout) return { action: 'timeout' }
+          if (error instanceof PersonalFeedInputError) throw error
+          if (error instanceof McpError && error.code === ErrorCode.InvalidParams) throw new PersonalFeedInputError('invalid answer')
+          return { action: 'unavailable' }
+        }
+      }
+      const task = definition.invoke(input as Input, { signal: abort.signal, mode, ask })
+      const tracked = options.track(task, abort)
+      const untrustedResult = await Promise.race([tracked, deadline])
       const structuredContent = definition.outputSchema.parse(untrustedResult) as Record<string, unknown>
-      options.logger?.({
+      safeLog(options.logger, {
         operation,
         requestId,
         result: 'success',
@@ -178,14 +210,24 @@ function register<Input extends Record<string, unknown>>(
         content: [{ type: 'text' as const, text: humanText(operation, String(structuredContent.status), structuredContent) }],
         structuredContent,
       }
-    } catch {
-      options.logger?.({
+    } catch (error) {
+      if (transportTermination && !(error instanceof PersonalFeedInputError) && !(error instanceof PersonalFeedStorageError)) {
+        options.terminateRequest?.(extra.requestId)
+      }
+      safeLog(options.logger, {
         operation,
         requestId,
         result: 'error',
         resultCategory: abort.signal.aborted ? 'cancelled_or_timeout' : 'handler_error',
         durationMs: Math.max(0, Math.round(performance.now() - started)),
       })
+      const fallback = !(error instanceof PersonalFeedInputError) && !(error instanceof PersonalFeedStorageError)
+        ? incompleteFallback(operation, timedOut ? 'interaction_timeout' : extra.signal.aborted ? 'interaction_cancelled' : undefined)
+        : undefined
+      if (fallback !== undefined) return {
+        content: [{ type: 'text' as const, text: humanText(operation, 'incomplete', fallback) }],
+        structuredContent: fallback,
+      }
       return {
         isError: true,
         content: [{ type: 'text' as const, text: 'Personal Feed 本次调用未完成。' }],
@@ -193,39 +235,39 @@ function register<Input extends Record<string, unknown>>(
     } finally {
       clearTimeout(timeout)
       extra.signal.removeEventListener('abort', onClientAbort)
+      options.releaseRequest?.(extra.requestId)
     }
   })
 }
 
-function checkQuestionPair(output: { question?: string | undefined; continuationToken?: string | undefined }, context: z.RefinementCtx): void {
-  if ((output.question === undefined) !== (output.continuationToken === undefined)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'question and continuationToken must appear together' })
-  }
+function safeLog(logger: SafeLogger | undefined, event: Parameters<SafeLogger>[0]): void {
+  try { logger?.(event) } catch { /* Diagnostics cannot change tool results. */ }
 }
 
-function checkSourceReason(output: { status: string; stage?: string | undefined; reason?: string | undefined }, context: z.RefinementCtx): void {
-  if (output.reason !== undefined && (output.status !== 'incomplete' || output.stage !== 'source_window')) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'reason is only valid for incomplete source_window', path: ['reason'] })
-  }
+function checkReason(output: { status: string; stage?: string | undefined; reason?: string | undefined }, context: z.RefinementCtx): void {
+  if (output.reason === undefined) return
+  const allowed = output.reason.startsWith('interaction_')
+    ? ['context_observation', 'personal_context', 'feedback_interpretation', 'shutdown'].includes(output.stage ?? '')
+    : output.reason === 'exploration_not_ready' ? output.stage === 'judgement_execution' : output.stage === 'source_window'
+  if (output.status !== 'incomplete' || !allowed) context.addIssue({ code: z.ZodIssueCode.custom, message: 'invalid reason for stage', path: ['reason'] })
+}
+
+function incompleteFallback(
+  operation: typeof PERSONAL_FEED_TOOL_NAMES[number],
+  reason?: 'interaction_cancelled' | 'interaction_timeout',
+): Record<string, unknown> | undefined {
+  const stage = operation === 'request' ? 'shutdown'
+    : operation === 'observe_context' ? 'context_observation'
+      : operation === 'process_feedback' ? 'feedback_interpretation' : undefined
+  return stage === undefined ? undefined : Object.freeze({
+    status: 'incomplete',
+    stage,
+    ...(reason === undefined ? {} : { reason }),
+  })
 }
 
 function humanText(operation: string, status: string, output: Record<string, unknown>): string {
-  const waitingForContext = operation === 'request' && status === 'incomplete'
-    && output.stage === 'personal_context' && typeof output.question === 'string'
-  const retainedQuestion = (operation === 'observe_context' || operation === 'process_feedback')
-    && status === 'incomplete' && typeof output.question === 'string'
-  const resumedWithQuestion = operation === 'observe_context' && output.feed !== undefined
-    && typeof output.question === 'string'
-  const parts = [waitingForContext ? 'Personal Feed 正在等待你补充信息。' : resultText(operation, status, output)]
-  if (output.feed !== undefined) {
-    const feed = output.feed as Record<string, unknown>
-    if (resumedWithQuestion) parts.push('原请求已继续执行。')
-    parts.push(resultText('request', String(feed.status), feed))
-  }
-  if (retainedQuestion) parts.push('这次回答尚未处理成功；仍保留上次问题的续答关联。')
-  if (resumedWithQuestion) parts.push('仍可补充的问题（继续回答不会重复执行本次 Feed）：')
-  if (typeof output.question === 'string') parts.push(retainedQuestion ? `上次保留的问题：${output.question}` : output.question)
-  return parts.filter(part => part !== '').join('\n')
+  return [resultText(operation, status, output), typeof output.question === 'string' ? output.question : ''].filter(Boolean).join('\n')
 }
 
 const INCOMPLETE_STAGE_TEXT: Readonly<Record<string, string>> = Object.freeze({
@@ -234,7 +276,7 @@ const INCOMPLETE_STAGE_TEXT: Readonly<Record<string, string>> = Object.freeze({
   source_window: 'Personal Feed 的来源观察未完成。',
   judgement_execution: 'Personal Feed 对内容是否符合条件的判断未完成。',
   conflict: 'Personal Feed 的信息状态发生冲突，本次处理未完成。',
-  shutdown: 'Personal Feed 服务正在停止，本次处理未完成。',
+  shutdown: 'Personal Feed 本次请求已中止，处理未完成。',
   feedback_interpretation: 'Personal Feed 对本次反馈的理解未完成。',
   feedback_commit: 'Personal Feed 对本次反馈的保存未完成。',
 })
@@ -242,12 +284,26 @@ const INCOMPLETE_STAGE_TEXT: Readonly<Record<string, string>> = Object.freeze({
 function resultText(operation: string, status: string, output: Record<string, unknown>): string {
   if (status === 'business_empty') return '暂时没有符合条件的 Personal Feed 内容。'
   if (status === 'needs_input') return ''
-  if (status === 'one_link') return `Personal Feed 已选出一条内容：${String(output.url)}`
+  if (status === 'one_link') {
+    const limitationText = Array.isArray(output.limitations) ? output.limitations.map(item => ({
+      partial_observation: '部分来源未完成观察',
+      material_insufficient: '部分正文不足',
+      judgement_incomplete: '部分内容判断未完成',
+    })[String(item)]).filter((item): item is string => item !== undefined).join('；') : ''
+    return `Personal Feed 已选出一条内容：${String(output.url)}${limitationText === '' ? '' : `\n限制：${limitationText}。`}`
+  }
   if (status === 'incomplete' && output.stage === 'source_window') {
     if (output.reason === 'observation_failed') return 'Personal Feed 获取来源失败，本次未完成。'
     if (output.reason === 'partial_observation') return 'Personal Feed 仅完成部分来源观察，本次未完成。'
     if (output.reason === 'material_insufficient') return 'Personal Feed 来源正文不足，无法完成判断。'
   }
+  if (status === 'incomplete' && output.reason === 'exploration_not_ready') {
+    return '当前候选未找到推荐，后续陌生方向探索尚未就绪。'
+  }
+  if (status === 'incomplete' && output.reason === 'interaction_unavailable') return '当前客户端无法完成表单问答，本次处理未完成。'
+  if (status === 'incomplete' && output.reason === 'interaction_declined') return '本次表单未取得回答，处理未完成。'
+  if (status === 'incomplete' && output.reason === 'interaction_cancelled') return '本次处理已取消，未完成。'
+  if (status === 'incomplete' && output.reason === 'interaction_timeout') return '本次处理已超时，未完成。'
   if (status === 'incomplete') return INCOMPLETE_STAGE_TEXT[String(output.stage)] ?? 'Personal Feed 本次处理未完成。'
   if (operation === 'list_saved') return `已返回 ${Array.isArray(output.items) ? output.items.length : 0} 条收藏。`
   return `Personal Feed 结果：${status}。`

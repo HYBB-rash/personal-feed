@@ -11,21 +11,21 @@ afterEach(() => vi.unstubAllGlobals())
 
 describe('private model failure diagnostics', () => {
   it.each([
-    { value: { [secret]: secret }, reason: 'judgment_schema' },
-    { value: { longTermValue: 'pass', longTermInterestMatch: 'not_reached', informationIncrement: 'not_reached' }, reason: 'judgment_schema' },
-    { value: { longTermValue: 'unknown', longTermInterestMatch: 'not_reached', informationIncrement: 'not_reached' }, reason: 'judgment_unknown', detail: 'long_term_value' },
-    { value: { longTermValue: 'pass', longTermInterestMatch: 'unknown', informationIncrement: 'not_reached' }, reason: 'judgment_unknown', detail: 'long_term_interest' },
-    { value: { longTermValue: 'pass', longTermInterestMatch: 'pass', informationIncrement: 'unknown' }, reason: 'judgment_unknown', detail: 'information_increment' },
-  ])('distinguishes unfinished judgment $reason $detail without material text', async scenario => {
+    { value: { [secret]: secret }, result: { status: 'incomplete' }, reason: 'judgment_schema' },
+    { value: { longTermValue: 'pass', longTermInterestMatch: 'not_reached', informationIncrement: 'not_reached' }, result: { status: 'incomplete' }, reason: 'judgment_schema' },
+    { value: { longTermValue: 'unknown', longTermInterestMatch: 'not_reached', informationIncrement: 'not_reached' }, result: { status: 'incomplete' }, reason: 'judgment_unknown', detail: 'long_term_value' },
+    { value: { longTermValue: 'pass', longTermInterestMatch: 'unknown', informationIncrement: 'unknown' }, result: { status: 'qualified' } },
+    { value: { longTermValue: 'pass', longTermInterestMatch: 'pass', informationIncrement: 'unknown' }, result: { status: 'qualified' } },
+  ])('distinguishes required judgment failures from allowed unknowns', async scenario => {
     vi.stubGlobal('fetch', vi.fn(async () => context(scenario.value)))
     const events: unknown[] = []
     const model = createOpenAICompatiblePersonalFeedModel(config, event => events.push(event))
     await expect(model.judgeCandidate({ requestText: secret, personalContext: [], cutoff: '2026-09-06T00:00:00.000Z',
       shanghaiDay: '2026-09-06', signal: new AbortController().signal,
       candidate: { stableId: 'x-status:1', canonicalUrl: 'https://x.com/fixture/status/1', body: secret,
-        authorHandle: 'fixture', publishedAt: '2026-09-05T23:59:00.000Z' } })).resolves.toEqual({ status: 'incomplete' })
-    expect(events).toEqual([{ event: 'model_failure', operation: 'judge_candidate', reason: scenario.reason,
-      ...('detail' in scenario ? { detail: scenario.detail } : {}) }])
+        authorHandle: 'fixture', publishedAt: '2026-09-05T23:59:00.000Z' } })).resolves.toEqual(scenario.result)
+    expect(events).toEqual('reason' in scenario ? [{ event: 'model_failure', operation: 'judge_candidate', reason: scenario.reason,
+      ...('detail' in scenario ? { detail: scenario.detail } : {}) }] : [])
     expect(JSON.stringify(events)).not.toContain(secret)
     expect(JSON.stringify(events)).not.toContain('https://')
   })

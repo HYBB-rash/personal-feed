@@ -1,10 +1,11 @@
-import { createHash, randomBytes, randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import type { InteractionOptions, InteractionReply, InteractionStopReason } from './interaction.ts'
 import { AsyncQueue } from './async-queue.ts'
 import { PersonalFeedClosedError, PersonalFeedInputError, PersonalFeedStorageError } from './errors.ts'
 import { appendJsonLine, atomicWriteJson, readJson, readJsonLines } from './persistence.ts'
 
-export interface CallOptions {
+export interface CallOptions extends InteractionOptions {
   readonly signal?: AbortSignal
 }
 
@@ -29,12 +30,22 @@ export interface XCandidate {
   readonly surface?: 'for_you' | 'following' | 'explore'
 }
 
+export type SourceLimitation = 'partial_observation' | 'material_insufficient'
+export type FeedLimitation = SourceLimitation | 'judgement_incomplete'
+
 export type XObservation =
   | { readonly status: 'complete'; readonly candidates: readonly XCandidate[] }
   | {
       readonly status: 'incomplete'
       readonly stage: 'source_window'
-      readonly reason: 'material_insufficient' | 'partial_observation' | 'observation_failed'
+      readonly reason: 'observation_failed'
+    }
+  | {
+      readonly status: 'incomplete'
+      readonly stage: 'source_window'
+      readonly reason: SourceLimitation
+      readonly candidates?: readonly XCandidate[]
+      readonly limitations?: readonly SourceLimitation[]
     }
 
 export interface XObserver {
@@ -63,6 +74,11 @@ type ClarificationOutput = {
 }
 
 export interface PersonalFeedModel {
+  readonly assessContext: (input: {
+    readonly requestText: string
+    readonly activeFacts: readonly PersonalContextFact[]
+    readonly signal: AbortSignal
+  }) => Promise<{ readonly status: 'completed'; readonly sufficient: boolean } | { readonly status: 'incomplete' }>
   readonly observeContext: (input: {
     readonly currentText: string
     readonly activeFacts: readonly PersonalContextFact[]
@@ -103,36 +119,31 @@ export interface PersonalFeedModel {
 
 /** A Feed outcome without clarification fields, also used inside update results. */
 export type FeedResult =
-  | { readonly status: 'one_link'; readonly url: string }
+  | { readonly status: 'one_link'; readonly url: string; readonly limitations?: readonly FeedLimitation[] }
   | { readonly status: 'business_empty' }
   | { readonly status: 'incomplete'; readonly stage: 'source_window'; readonly reason?: 'material_insufficient' | 'partial_observation' | 'observation_failed' }
-  | { readonly status: 'incomplete'; readonly stage: 'context_observation' | 'personal_context' | 'judgement_execution' | 'conflict' | 'shutdown' }
+  | { readonly status: 'incomplete'; readonly stage: 'judgement_execution'; readonly reason?: 'exploration_not_ready' }
+  | { readonly status: 'incomplete'; readonly stage: 'context_observation' | 'personal_context' | 'conflict' | 'shutdown'; readonly reason?: InteractionStopReason }
 
-type QuestionHandoff =
-  | { readonly question: string; readonly continuationToken: string }
-  | { readonly question?: never; readonly continuationToken?: never }
+export type RequestResult = FeedResult
 
-export type RequestResult = FeedResult & QuestionHandoff
-
-export type ObserveContextResult = (
+export type ObserveContextResult =
   | { readonly status: 'applied'; readonly appliedCount: number }
   | { readonly status: 'ignored' }
   | { readonly status: 'already_observed' }
-  | { readonly status: 'incomplete'; readonly stage: 'context_observation' | 'conflict' }
-) & QuestionHandoff & { readonly feed?: FeedResult }
+  | { readonly status: 'incomplete'; readonly stage: 'context_observation' | 'conflict'; readonly reason?: InteractionStopReason }
 
 type ContextPreparation = {
   readonly result: ObserveContextResult
   readonly effectiveFacts: readonly PersonalContextFact[]
   readonly sufficient?: boolean
-  readonly resumeRequestText?: string
+  readonly clarification?: ClarificationInput
 }
 
-export type ProcessFeedbackResult = (
+export type ProcessFeedbackResult =
   | { readonly status: 'pass' | 'completed' | 'discarded' }
-  | { readonly status: 'needs_input'; readonly question: string; readonly continuationToken: string }
-  | { readonly status: 'incomplete'; readonly stage: 'feedback_interpretation' | 'feedback_commit' | 'conflict' }
-) & QuestionHandoff & { readonly feed?: FeedResult }
+  | { readonly status: 'needs_input'; readonly question: string }
+  | { readonly status: 'incomplete'; readonly stage: 'feedback_interpretation' | 'feedback_commit' | 'conflict'; readonly reason?: InteractionStopReason }
 
 export type RecordFeedbackResult =
   | { readonly status: 'saved' | 'unsaved' | 'already_saved' | 'already_unsaved' }
@@ -148,12 +159,10 @@ export interface PersonalFeedApplication {
   readonly request: (input: { readonly currentText: string }, options?: CallOptions) => Promise<RequestResult>
   readonly observeContext: (input: {
     readonly currentText: string
-    readonly continuationToken?: string
   }, options?: CallOptions) => Promise<ObserveContextResult>
   readonly processFeedback: (input: {
     readonly currentText: string
     readonly referenceText?: string
-    readonly continuationToken?: string
   }, options?: CallOptions) => Promise<ProcessFeedbackResult>
   readonly recordFeedback: (input: {
     readonly operation: 'save' | 'unsave'
@@ -190,15 +199,6 @@ type ContextState = {
   readonly facts: readonly PersonalContextFact[]
 }
 
-type CandidateRecord = {
-  readonly schemaVersion: 1
-  readonly event: 'candidate_processed'
-  readonly stableId: string
-  readonly canonicalUrl: string
-  readonly judgment: 'qualified' | 'not_qualified'
-  readonly processedAt: string
-}
-
 type SavedEvent = {
   readonly schemaVersion: 1
   readonly id: string
@@ -207,12 +207,6 @@ type SavedEvent = {
   readonly title?: string
   readonly note?: string
   readonly createdAt: string
-}
-
-type PendingEntry = {
-  readonly tool: 'context' | 'feedback'
-  readonly resumeFeed?: true
-  readonly clarification: ClarificationInput
 }
 
 type FeedbackEvent = {
@@ -231,11 +225,9 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
   const shutdownTimeoutMs = options.shutdownTimeoutMs ?? 10_000
   const requestQueue = new AsyncQueue()
   const contextQueue = new AsyncQueue()
-  const pending = new Map<string, PendingEntry>()
   const savedQueue = new AsyncQueue()
   const shutdown = new AbortController()
   const contextPath = join(options.stateDir, 'personal-context.json')
-  const candidatesPath = join(options.stateDir, 'candidates.jsonl')
   const feedbackPath = join(options.stateDir, 'feedback.jsonl')
   const savedPath = join(options.stateDir, 'saved.jsonl')
   let closed = false
@@ -253,48 +245,67 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     return call?.signal === undefined ? shutdown.signal : AbortSignal.any([shutdown.signal, call.signal])
   }
 
-  // All commits share the existing context queue. Interpretations run outside it;
-  // both facts and the particular question must still match at commit time.
-  const questionPair = (token?: string, entry?: PendingEntry): QuestionHandoff =>
-    token !== undefined && entry !== undefined && pending.get(token) === entry
-      ? { question: entry.clarification.question, continuationToken: token } : {}
+  const ask = async (question: string, signal: AbortSignal, call?: CallOptions): Promise<InteractionReply> => {
+    if (signal.aborted) return { action: signal.reason?.name === 'TimeoutError' ? 'timeout' : 'cancel' }
+    if (call?.mode !== 'interactive' || call.ask === undefined) return { action: 'unavailable' }
+    let abort!: () => void
+    const cancelled = new Promise<InteractionReply>(resolve => {
+      abort = () => resolve({ action: signal.reason?.name === 'TimeoutError' ? 'timeout' : 'cancel' })
+      signal.addEventListener('abort', abort, { once: true })
+    })
+    try {
+      const reply = await Promise.race([Promise.resolve().then(() => call.ask!(question, signal)), cancelled])
+      if (signal.aborted) return { action: signal.reason?.name === 'TimeoutError' ? 'timeout' : 'cancel' }
+      if (reply.action === 'accept' && !validModelText(reply.text)) return { action: 'unavailable' }
+      return reply
+    } catch (error) {
+      if (error instanceof PersonalFeedInputError) throw error
+      return { action: 'unavailable' }
+    }
+    finally { signal.removeEventListener('abort', abort) }
+  }
+  const stopReason = (reply: Exclude<InteractionReply, { action: 'accept' }>): InteractionStopReason =>
+    ({ unavailable: 'interaction_unavailable', decline: 'interaction_declined', cancel: 'interaction_cancelled', timeout: 'interaction_timeout' })[reply.action] as InteractionStopReason
 
-  const finishQuestion = (tool: PendingEntry['tool'], currentText: string, remaining: RemainingClarification | null | undefined,
-    token?: string, prior?: PendingEntry, referenceText?: string, resolvedReferenceText?: string, resumeFeed = false): QuestionHandoff => {
-    if (token !== undefined) pending.delete(token)
-    if (remaining == null) return {}
-    const continuationToken = randomBytes(32).toString('base64url')
-    const original = prior?.clarification
-    const originalReference = (prior === undefined ? referenceText : original?.referenceText) ?? resolvedReferenceText
-    pending.set(continuationToken, Object.freeze({ tool, ...(resumeFeed ? { resumeFeed: true as const } : {}), clarification: Object.freeze({
-      originalText: original?.originalText ?? currentText,
-      ...(originalReference === undefined ? {} : { referenceText: originalReference }),
-      ...remaining,
-    }) }))
-    return { question: remaining.question, continuationToken }
+  const interruptedReason = (signal: AbortSignal): InteractionStopReason | undefined => {
+    if (!signal.aborted || shutdown.signal.aborted) return undefined
+    return signal.reason?.name === 'TimeoutError' ? 'interaction_timeout' : 'interaction_cancelled'
+  }
+  const interruptedFeed = (signal: AbortSignal): FeedResult => {
+    const reason = interruptedReason(signal)
+    return Object.freeze({
+      status: 'incomplete',
+      stage: 'shutdown',
+      ...(reason === undefined ? {} : { reason }),
+    })
   }
 
   const observeContextWithSignal = async (currentText: string, signal: AbortSignal, assessForFeed = false,
-    token?: string): Promise<ContextPreparation> => {
-    const prior = token === undefined ? undefined : pending.get(token)
+    prior?: ClarificationInput): Promise<ContextPreparation> => {
     const incomplete = (stage: 'context_observation' | 'conflict' = 'context_observation',
       reason: ApplicationFailureEvent['reason'] = stage === 'conflict' ? 'context_conflict' : 'model_incomplete'): ContextPreparation => {
       report('observe_context', reason)
       return Object.freeze({
-      result: Object.freeze({ status: 'incomplete', stage, ...(prior?.tool === 'context' ? questionPair(token, prior) : {}) }), effectiveFacts: [],
+      result: Object.freeze({ status: 'incomplete', stage }), effectiveFacts: [],
       })
     }
-    if (token !== undefined && prior?.tool !== 'context') return incomplete('context_observation', 'invalid_association')
-    assessForFeed = assessForFeed || prior?.resumeFeed === true
     const before = await contextQueue.run(async () => loadContext(contextPath))
-    if (signal.aborted) return incomplete('context_observation', 'cancelled')
+    const interruptedContext = (): ContextPreparation => {
+      report('observe_context', 'cancelled')
+      const reason = interruptedReason(signal)
+      return Object.freeze({
+        result: Object.freeze({ status: 'incomplete', stage: 'context_observation', ...(reason === undefined ? {} : { reason }) }),
+        effectiveFacts: [],
+      })
+    }
+    if (signal.aborted) return interruptedContext()
     let interpreted: Awaited<ReturnType<PersonalFeedModel['observeContext']>>
     try {
       interpreted = await options.model.observeContext({
         currentText, activeFacts: before.facts, signal, ...(assessForFeed ? { assessForFeed: true } : {}),
-        ...(prior === undefined ? {} : { clarification: prior.clarification }),
+        ...(prior === undefined ? {} : { clarification: prior }),
       })
-      if (signal.aborted) return incomplete('context_observation', 'cancelled')
+      if (signal.aborted) return interruptedContext()
       if (interpreted.status !== 'applied' && interpreted.status !== 'ignored') return incomplete()
       if (!validRemaining(interpreted.remaining, prior !== undefined)
         || interpreted.resolvedReferenceText !== undefined && !validModelText(interpreted.resolvedReferenceText)) {
@@ -313,64 +324,60 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     // Semantic gaps still require the model's specific question.
     const remaining = assessForFeed && !ready
       ? interpreted.remaining ?? missingContextQuestion(effectiveFacts)
-      : interpreted.remaining
+      : assessForFeed ? undefined : interpreted.remaining
     if (assessForFeed && !ready && remaining == null) return incomplete('context_observation', 'missing_clarification')
     return contextQueue.run(async () => {
       const latest = await loadContext(contextPath)
-      if (latest.generation !== before.generation || token !== undefined && pending.get(token) !== prior) return incomplete('conflict')
-      if (signal.aborted) return incomplete('context_observation', 'cancelled')
+      if (latest.generation !== before.generation) return incomplete('conflict')
+      if (signal.aborted) return interruptedContext()
       const next: ContextState = { schemaVersion: 1, generation: latest.generation + 1, facts: applied.facts }
       await atomicWriteJson(contextPath, next)
-      const pair = finishQuestion('context', currentText, remaining, token, prior, undefined, interpreted.resolvedReferenceText, assessForFeed && !ready)
+      const clarification = remaining == null ? undefined : { originalText: prior?.originalText ?? currentText, ...((prior?.referenceText ?? interpreted.resolvedReferenceText) === undefined ? {} : { referenceText: prior?.referenceText ?? interpreted.resolvedReferenceText }), ...remaining }
       return Object.freeze({
         result: interpreted.status === 'ignored'
-          ? Object.freeze({ status: 'ignored' as const, ...pair })
-          : Object.freeze({ status: 'applied' as const, appliedCount: applied.appliedCount, ...pair }),
+          ? Object.freeze({ status: 'ignored' as const })
+          : Object.freeze({ status: 'applied' as const, appliedCount: applied.appliedCount }),
         effectiveFacts,
-        ...(prior?.resumeFeed && ready ? { resumeRequestText: prior.clarification.originalText } : {}),
+        ...(clarification === undefined ? {} : { clarification }),
         ...(assessForFeed && typeof sufficient === 'boolean' ? { sufficient } : {}),
       })
     })
   }
 
-  const observeContext = async (input: {
-    readonly currentText: string
-    readonly continuationToken?: string
-  }, call?: CallOptions): Promise<ObserveContextResult> => {
-    validateExact(input, ['currentText', 'continuationToken'], ['currentText'])
+  const prepareInteractive = async (currentText: string, signal: AbortSignal, assessForFeed: boolean, call?: CallOptions): Promise<ContextPreparation> => {
+    let prior: ClarificationInput | undefined
+    let appliedCount = 0
+    for (;;) {
+      const prepared = await observeContextWithSignal(currentText, signal, assessForFeed, prior)
+      if (prepared.result.status === 'applied') appliedCount += prepared.result.appliedCount
+      if (prepared.result.status === 'incomplete') return prepared
+      if (prepared.clarification === undefined) return appliedCount > 0 ? { ...prepared, result: { status: 'applied', appliedCount } } : prepared
+      const reply = await ask(prepared.clarification.question, signal, call)
+      if (reply.action !== 'accept') return { ...prepared, result: { status: 'incomplete', stage: 'context_observation', reason: stopReason(reply) } }
+      currentText = reply.text
+      prior = prepared.clarification
+    }
+  }
+
+  const observeContext = async (input: { readonly currentText: string }, call?: CallOptions): Promise<ObserveContextResult> => {
+    validateExact(input, ['currentText'])
     const currentText = validateText(input.currentText, 'currentText')
-    const token = optionalToken(input.continuationToken)
-    const signal = signalFor(call)
-    const prepared = await observeContextWithSignal(currentText, signal, false, token)
-    if (prepared.resumeRequestText === undefined) return prepared.result
-    const requestText = prepared.resumeRequestText
-    const feed = await requestQueue.run(() => runPreparedFeed(requestText, prepared.effectiveFacts, signal))
-    return Object.freeze({ ...prepared.result, feed })
+    return (await prepareInteractive(currentText, signalFor(call), false, call)).result
   }
 
   const request = async (input: { readonly currentText: string }, call?: CallOptions): Promise<RequestResult> => {
     validateExact(input, ['currentText'])
     const currentText = validateText(input.currentText, 'currentText')
     const signal = signalFor(call)
-    return requestQueue.run(async () => {
-      if (signal.aborted) return Object.freeze({ status: 'incomplete', stage: 'shutdown' })
-      const prepared = await observeContextWithSignal(currentText, signal, true)
-      const observed = prepared.result
-      const pair = observed.continuationToken === undefined ? {} : { question: observed.question, continuationToken: observed.continuationToken }
-      if (observed.status === 'incomplete') {
-        return Object.freeze({ ...pair, status: 'incomplete', stage: observed.stage === 'conflict' ? 'conflict' : 'context_observation' })
-      }
-      const personalContext = prepared.effectiveFacts
-      if (!prepared.sufficient || !contextIsSufficient(personalContext)) {
-        return Object.freeze({ ...pair, status: 'incomplete', stage: 'personal_context' })
-      }
-      return Object.freeze({ ...pair, ...await runPreparedFeed(currentText, personalContext, signal) })
-    })
+    if (signal.aborted) return interruptedFeed(signal)
+    const personalContext = (await contextQueue.run(() => loadContext(contextPath))).facts
+      .filter(fact => fact.lane !== 'existing_knowledge' || fact.epistemic === 'asserted')
+    return requestQueue.run(() => runPreparedFeed(currentText, personalContext, signal))
   }
 
   // Both entry points select from the same accepted snapshot, without reinterpreting text.
   const runPreparedFeed = async (requestText: string, personalContext: readonly PersonalContextFact[], signal: AbortSignal): Promise<FeedResult> => {
-    if (signal.aborted) return Object.freeze({ status: 'incomplete', stage: 'shutdown' })
+    if (signal.aborted) return interruptedFeed(signal)
     const cutoff = validNow(now).toISOString()
     const requestId = `pf:${randomBytes(16).toString('hex')}`
     let observedWindow: XObservation
@@ -384,14 +391,22 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     } catch {
       return Object.freeze({ status: 'incomplete', stage: 'source_window', reason: 'observation_failed' })
     }
-    if (signal.aborted) return Object.freeze({ status: 'incomplete', stage: 'source_window', reason: 'observation_failed' })
-    if (observedWindow.status === 'incomplete') return Object.freeze({ status: 'incomplete', stage: 'source_window', reason: observedWindow.reason })
-    const candidates = uniqueCandidates(observedWindow.candidates)
+    if (signal.aborted) return interruptedFeed(signal)
+    if (observedWindow.status === 'incomplete' && observedWindow.reason === 'observation_failed') {
+      return Object.freeze({ status: 'incomplete', stage: 'source_window', reason: observedWindow.reason })
+    }
+    let sourceLimitations: readonly SourceLimitation[] = Object.freeze([])
+    if (observedWindow.status === 'incomplete') {
+      const parsedLimitations = distinctSourceLimitations(observedWindow.limitations)
+      if (parsedLimitations === undefined || observedWindow.candidates === undefined) {
+        return Object.freeze({ status: 'incomplete', stage: 'source_window', reason: observedWindow.reason })
+      }
+      sourceLimitations = parsedLimitations
+    }
+    const candidates = uniqueCandidates(observedWindow.status === 'complete' ? observedWindow.candidates : observedWindow.candidates!)
     if (candidates === undefined) return Object.freeze({ status: 'incomplete', stage: 'source_window', reason: 'material_insufficient' })
-    const startRecords = await loadCandidateRecords(candidatesPath)
-    const processed = new Set(startRecords.map(record => record.stableId))
+    const limitations: FeedLimitation[] = [...sourceLimitations]
     for (const candidate of candidates) {
-      if (processed.has(candidate.stableId)) continue
       let judgment: Awaited<ReturnType<PersonalFeedModel['judgeCandidate']>>
       try {
         judgment = await options.model.judgeCandidate({
@@ -403,53 +418,46 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
           signal,
         })
       } catch {
-        return Object.freeze({ status: 'incomplete', stage: 'judgement_execution' })
+        if (signal.aborted) return interruptedFeed(signal)
+        if (!limitations.includes('judgement_incomplete')) limitations.push('judgement_incomplete')
+        continue
       }
-      if (signal.aborted || judgment.status === 'incomplete') {
-        return Object.freeze({ status: 'incomplete', stage: 'judgement_execution' })
+      if (signal.aborted) return interruptedFeed(signal)
+      if (judgment.status === 'incomplete') {
+        if (!limitations.includes('judgement_incomplete')) limitations.push('judgement_incomplete')
+        continue
       }
-      const record: CandidateRecord = {
-        schemaVersion: 1,
-        event: 'candidate_processed',
-        stableId: candidate.stableId,
-        canonicalUrl: candidate.canonicalUrl,
-        judgment: judgment.status,
-        processedAt: validNow(now).toISOString(),
-      }
-      await appendJsonLine(candidatesPath, record)
-      if (judgment.status === 'qualified') return Object.freeze({ status: 'one_link', url: candidate.canonicalUrl })
+      if (judgment.status === 'qualified') return Object.freeze({ status: 'one_link', url: candidate.canonicalUrl,
+        ...(limitations.length === 0 ? {} : { limitations: Object.freeze(limitations) }) })
     }
-    return Object.freeze({ status: 'business_empty' })
+    if (limitations.includes('judgement_incomplete')) return Object.freeze({ status: 'incomplete', stage: 'judgement_execution' })
+    if (sourceLimitations.length > 0) return Object.freeze({ status: 'incomplete', stage: 'source_window', reason: sourceLimitations[0]! })
+    return Object.freeze({ status: 'incomplete', stage: 'judgement_execution', reason: 'exploration_not_ready' })
   }
 
-  const processFeedback = async (input: {
-    readonly currentText: string
-    readonly referenceText?: string
-    readonly continuationToken?: string
-  }, call?: CallOptions): Promise<ProcessFeedbackResult> => {
-    validateExact(input, ['currentText', 'referenceText', 'continuationToken'], ['currentText'])
-    const currentText = validateText(input.currentText, 'currentText')
-    const referenceText = optionalText(input.referenceText, 'referenceText')
-    const token = optionalToken(input.continuationToken)
-    const signal = signalFor(call)
-    const prior = token === undefined ? undefined : pending.get(token)
+  const feedbackStep = async (currentText: string, referenceText: string | undefined, signal: AbortSignal,
+    prior?: ClarificationInput): Promise<{ result: ProcessFeedbackResult; clarification?: ClarificationInput }> => {
     const incomplete = (stage: 'feedback_interpretation' | 'conflict' = 'feedback_interpretation',
-      reason: ApplicationFailureEvent['reason'] = stage === 'conflict' ? 'context_conflict' : 'model_incomplete'): ProcessFeedbackResult => {
+      reason: ApplicationFailureEvent['reason'] = stage === 'conflict' ? 'context_conflict' : 'model_incomplete'): { result: ProcessFeedbackResult } => {
       report('process_feedback', reason)
-      return Object.freeze({ status: 'incomplete', stage, ...(prior?.tool === 'feedback' ? questionPair(token, prior) : {}) })
+      return { result: { status: 'incomplete', stage } }
     }
-    if (token !== undefined && prior?.tool !== 'feedback') return incomplete('feedback_interpretation', 'invalid_association')
     const before = await contextQueue.run(async () => loadContext(contextPath))
-    if (signal.aborted) return incomplete('feedback_interpretation', 'cancelled')
+    const interruptedFeedback = (): { result: ProcessFeedbackResult } => {
+      report('process_feedback', 'cancelled')
+      const reason = interruptedReason(signal)
+      return { result: { status: 'incomplete', stage: 'feedback_interpretation', ...(reason === undefined ? {} : { reason }) } }
+    }
+    if (signal.aborted) return interruptedFeedback()
     let interpreted: Awaited<ReturnType<PersonalFeedModel['interpretFeedback']>>
     try {
-      const resolvedReference = prior === undefined ? referenceText : prior.clarification.referenceText
+      const resolvedReference = prior === undefined ? referenceText : prior.referenceText
       interpreted = await options.model.interpretFeedback({
         currentText, activeFacts: before.facts,
         ...(resolvedReference === undefined ? {} : { referenceText: resolvedReference }),
-        ...(prior === undefined ? {} : { clarification: prior.clarification }), signal,
+        ...(prior === undefined ? {} : { clarification: prior }), signal,
       })
-      if (signal.aborted) return incomplete('feedback_interpretation', 'cancelled')
+      if (signal.aborted) return interruptedFeedback()
       if (!['pass', 'discarded', 'needs_input', 'completed'].includes(interpreted.status)) return incomplete()
       if (!validRemaining(interpreted.remaining, prior !== undefined)
         || interpreted.resolvedReferenceText !== undefined && !validModelText(interpreted.resolvedReferenceText)
@@ -463,30 +471,42 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     if (applied === undefined) return incomplete('feedback_interpretation', 'context_changes_invalid')
     return contextQueue.run(async () => {
       const latest = await loadContext(contextPath)
-      if (latest.generation !== before.generation || token !== undefined && pending.get(token) !== prior) return incomplete('conflict')
-      if (signal.aborted) return incomplete('feedback_interpretation', 'cancelled')
-      // Save facts before the feedback ledger. A storage fault leaves the question
-      // usable; the next interpretation re-reads these facts instead of replaying changes.
+      if (latest.generation !== before.generation) return incomplete('conflict')
+      if (signal.aborted) return interruptedFeedback()
       if (interpreted.changes !== undefined) await atomicWriteJson(contextPath, {
         schemaVersion: 1, generation: latest.generation + 1, facts: applied.facts,
       })
       if (interpreted.status === 'completed') {
-        const eventId = token === undefined ? randomUUID() : feedbackEventId(token)
-        const previous = (await loadFeedbackEvents(feedbackPath)).find(event => event.id === eventId)
-        if (previous !== undefined && (previous.sentiment !== interpreted.sentiment || previous.targetText !== interpreted.targetText)) {
-          throw new PersonalFeedStorageError('feedback event conflicts with the pending answer')
-        }
-        if (previous === undefined) await appendJsonLine(feedbackPath, {
-          schemaVersion: 1, id: eventId, sentiment: interpreted.sentiment,
+        await loadFeedbackEvents(feedbackPath)
+        await appendJsonLine(feedbackPath, {
+          schemaVersion: 1, id: randomUUID(), sentiment: interpreted.sentiment,
           targetText: interpreted.targetText, createdAt: validNow(now).toISOString(),
         } satisfies FeedbackEvent)
       }
-      const pair = finishQuestion('feedback', currentText, interpreted.remaining, token, prior, referenceText, interpreted.resolvedReferenceText)
-      if (interpreted.status === 'needs_input') {
-        return Object.freeze({ status: 'needs_input', ...pair }) as ProcessFeedbackResult
-      }
-      return Object.freeze({ status: interpreted.status as 'pass' | 'completed' | 'discarded', ...pair })
+      const remaining = interpreted.remaining
+      const clarification = remaining == null ? undefined : { originalText: prior?.originalText ?? currentText,
+        ...((prior?.referenceText ?? referenceText ?? interpreted.resolvedReferenceText) === undefined ? {} : { referenceText: prior?.referenceText ?? referenceText ?? interpreted.resolvedReferenceText }), ...remaining }
+      const result: ProcessFeedbackResult = interpreted.status === 'needs_input'
+        ? { status: 'needs_input', question: interpreted.remaining.question }
+        : { status: interpreted.status as 'pass' | 'completed' | 'discarded' }
+      return { result, ...(clarification === undefined ? {} : { clarification }) }
     })
+  }
+
+  const processFeedback = async (input: { readonly currentText: string; readonly referenceText?: string }, call?: CallOptions): Promise<ProcessFeedbackResult> => {
+    validateExact(input, ['currentText', 'referenceText'], ['currentText'])
+    let currentText = validateText(input.currentText, 'currentText')
+    const referenceText = optionalText(input.referenceText, 'referenceText')
+    const signal = signalFor(call)
+    let prior: ClarificationInput | undefined
+    for (;;) {
+      const step = await feedbackStep(currentText, referenceText, signal, prior)
+      if (step.result.status === 'incomplete' || step.result.status === 'completed' || step.result.status === 'discarded' || step.clarification === undefined) return step.result
+      const reply = await ask(step.clarification.question, signal, call)
+      if (reply.action !== 'accept') return { status: 'incomplete', stage: 'feedback_interpretation', reason: stopReason(reply) }
+      currentText = reply.text
+      prior = step.clarification
+    }
   }
 
   const recordFeedback = async (input: {
@@ -503,7 +523,9 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     const signal = signalFor(call)
     if (signal.aborted) throw new PersonalFeedClosedError('operation was cancelled')
     return savedQueue.run(async () => {
+      if (signal.aborted) throw new PersonalFeedClosedError('operation was cancelled')
       const events = await loadSavedEvents(savedPath)
+      if (signal.aborted) throw new PersonalFeedClosedError('operation was cancelled')
       const current = foldSaved(events).get(url)
       if (input.operation === 'save' && current?.saved === true) return Object.freeze({ status: 'already_saved' })
       if (input.operation === 'unsave' && current?.saved !== true) return Object.freeze({ status: 'already_unsaved' })
@@ -531,7 +553,10 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     const signal = signalFor(call)
     if (signal.aborted) throw new PersonalFeedClosedError('operation was cancelled')
     return savedQueue.run(async () => {
-      const folded = [...foldSaved(await loadSavedEvents(savedPath)).values()]
+      if (signal.aborted) throw new PersonalFeedClosedError('operation was cancelled')
+      const events = await loadSavedEvents(savedPath)
+      if (signal.aborted) throw new PersonalFeedClosedError('operation was cancelled')
+      const folded = [...foldSaved(events).values()]
         .filter(item => item.saved)
         .sort((left, right) => right.savedAt.localeCompare(left.savedAt))
         .slice(0, limit)
@@ -544,7 +569,6 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     if (closed) return
     closed = true
     shutdown.abort(new Error('personal-feed shutdown'))
-    pending.clear()
     await Promise.allSettled([options.observer.close()])
     const idle = Promise.all([
       requestQueue.idle(), contextQueue.idle(), savedQueue.idle(),
@@ -586,12 +610,6 @@ function validateText(value: unknown, field: string, maximum = 16_000): string {
 
 function optionalText(value: unknown, field: string, maximum = 16_000): string | undefined {
   return value === undefined ? undefined : validateText(value, field, maximum)
-}
-
-function optionalToken(value: unknown): string | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(value)) throw new PersonalFeedInputError('continuationToken is invalid')
-  return value
 }
 
 function validNow(now: () => Date): Date {
@@ -715,16 +733,6 @@ function missingContextQuestion(facts: readonly PersonalContextFact[]): Remainin
   return undefined
 }
 
-async function loadCandidateRecords(path: string): Promise<CandidateRecord[]> {
-  const records = await readJsonLines<unknown>(path)
-  if (records.some(record => !isRecord(record) || record.schemaVersion !== 1 || record.event !== 'candidate_processed'
-    || typeof record.stableId !== 'string' || typeof record.canonicalUrl !== 'string'
-    || (record.judgment !== 'qualified' && record.judgment !== 'not_qualified') || typeof record.processedAt !== 'string')) {
-    throw new PersonalFeedStorageError('candidate ledger is invalid')
-  }
-  return records as CandidateRecord[]
-}
-
 function uniqueCandidates(input: readonly XCandidate[]): XCandidate[] | undefined {
   if (!Array.isArray(input)) return undefined
   const unique = new Map<string, XCandidate>()
@@ -747,6 +755,12 @@ function validCandidate(value: unknown): value is XCandidate {
   }
 }
 
+function distinctSourceLimitations(value: unknown): readonly SourceLimitation[] | undefined {
+  if (!Array.isArray(value) || value.length === 0
+    || value.some(item => item !== 'partial_observation' && item !== 'material_insufficient')) return undefined
+  return Object.freeze([...new Set(value)] as SourceLimitation[])
+}
+
 async function loadSavedEvents(path: string): Promise<SavedEvent[]> {
   const events = await readJsonLines<unknown>(path)
   if (events.some(event => !isRecord(event) || event.schemaVersion !== 1 || typeof event.id !== 'string'
@@ -763,10 +777,6 @@ async function loadFeedbackEvents(path: string): Promise<FeedbackEvent[]> {
     throw new PersonalFeedStorageError('feedback ledger is invalid')
   }
   return events as FeedbackEvent[]
-}
-
-function feedbackEventId(token: string): string {
-  return `continuation:${createHash('sha256').update(token).digest('hex')}`
 }
 
 function foldSaved(events: readonly SavedEvent[]): Map<string, SavedItem & { readonly saved: boolean }> {

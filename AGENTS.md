@@ -1,6 +1,6 @@
 # Personal Feed contributor rules
 
-Personal Feed is a standalone, channel-neutral service. Runtime and package code must not depend on Telegram, Cordis, DeepSeek Harness, `DSH_HOME`, chat identifiers, message identifiers, session identifiers, or another host application's storage.
+Personal Feed is a standalone, channel-neutral service. Runtime and package code must not depend on Telegram, Cordis, DeepSeek Harness, `DSH_HOME`, host chat identifiers, host message identifiers, host session identifiers, or another host application's storage. Standard MCP connection identifiers may exist only inside the HTTP transport adapter for in-memory protocol routing; they are not business identities and must not enter application state or logs.
 
 Keep the five MCP tool names and their closed result categories stable. Treat business-empty, needs-input, and incomplete as normal results; only authentication, invalid input, and storage faults are MCP errors. Never log user text, observed X text, full URLs, continuation tokens, MCP tokens, or model credentials.
 

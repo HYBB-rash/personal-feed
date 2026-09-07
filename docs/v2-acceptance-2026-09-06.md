@@ -125,3 +125,47 @@
 - 新增 5 项回归测试，先失败、实现后通过；全部 33 项 Python 测试通过。覆盖无页面、只有详情页、复用、开页失败、截止时间、固定请求和非法返回。没有重跑无代码变化的 TypeScript 检查。
 - 独立实机观察前可用入口页 0，自动创建 1 页，原有页面保持不变；for_you / following / explore 均 complete，分别观察到 5 / 6 / 6 条。此次只运行采集器，没有调用模型或写入个人验收状态，不代替推荐质量验收。
 - 已切换到 `v2-rework-20260907T082230`，PID `3445123`；14 个 TypeScript 映射和 Python 副本匹配。此次仅 Python 运行代码变化，lib 指纹沿用 `3d6c3c5814ae453a1caace533ac8856a0202cb39549f176faa1e65fa1a01c115`。保留用户亲验状态目录，重启前后状态指纹一致，关注 1、认识 4，模型配置与日常状态不变。新修复尚未提交。
+
+
+### 2026-09-07 10:13：先核验 Personal Feed，再做 DSH 接入验收
+
+用户确认最终使用入口应以 DSH 为准，并要求先做好 Personal Feed 自身验收。此次只核验当前源码与隔离自动测试，没有启动 DSH、切换现用 Feed 服务或修改个人信息。
+
+- 当前源码 `1d6ec6f32bca1c95cb84bc908cef42c8f350ed38`，完整 `nix develop --command pnpm check` 通过：287 项 TypeScript、33 项 Python、类型检查和构建。包含隔离的真实 HTTP MCP 服务、临时存储与受控来源/模型故障及恢复；不代表真实模型推荐质量或 DSH 对话通过。构建仍有既有 `define` 选项告警。
+- 当前仍由调用方传回续答关联；真实普通对话曾丢失关联并停止，旧 A02 的正确传参测试不能覆盖该失败。见[实际失败调查](a02-continuation-investigation-2026-09-07.md)。
+- 刚确认的新方案尚未实现：请求接口没有每次调用的交互策略，也没有服务主动提问及接收答案的通用能力。当前资料不足的请求仍会产生追问，不能据本轮绿灯认定“后台不提问、主动交流由固定程序收答”已经通过。
+- 下一阶段服务验收需要成对证明：相同缺资料输入，后台结束本轮且不提问、不等待；主动交流允许必要问答，明确答案更新个人信息，仅在有原推荐请求时续做；普通更新不推荐；重复提交不重复执行，取消/中断如实结束，已保存信息供后续请求使用。先使用隔离调用方验证这些服务责任，再以本地 DSH 验证实际接入，Telegram 填写体验另验。
+- A01 的真实内容价值和新增认识、纠正、反馈后的实际使用效果仍需对应真实材料与用户判断；本轮未获取新 Feed，也未把历史待验项改成通过。
+
+
+## 2026-09-07 V0 当前工作树开发与自验
+
+本节按新版验收台分支记录，前文旧 A11 编号与旧 PASS 不代替本节。执行计划、最小设计、候选指纹与运行方式集中在 [v0-execution.md](v0-execution.md)。本轮未修改用户验收台中的业务通过记录。
+
+### 验收台导出与恢复
+
+使用原 HTML 字节相同的 `/tmp/personal-feed-v0-ui/index.html`，Chrome 独立 loopback `127.0.0.1:48627`，保存 1 条 wait 状态的 UI 测试记录，标记 `V0-UI-ROUNDTRIP-20260907`。实际导出的 Markdown 已核验用例章节及测试标记；JSON 已核验唯一尝试和 wait 类别。证据副本：`/tmp/personal-feed-v0-ui/PersonalFeed-验收记录-2026-09-07.md`、`/tmp/personal-feed-v0-ui/backup.json`。
+
+恢复导入在 filechooser.setFiles 阶段被 Chrome 扩展的本地文件权限拒绝，应用导入逻辑没有执行，因此恢复仍待验。已关闭本轮测试标签页并终止该确切临时 HTTP 进程；隔离副本/下载文件保留复核，原页面与用户记录未修改。
+
+
+### V0 最终候选的主负责人受控自验（15:37 +08:00）
+
+候选位于 `/home/herman/Projects/personal-feed` 完整 dirty 工作树，运行/测试/依赖清单 SHA-256 `fe7d618d7b9ff8c7a67e4f4b22a7ccbc8d44085db11f51fe60b9aa09fb625a5c`，详情与复验命令见 [执行记录](v0-execution.md)。独立 reviewer 三项返修均关闭后，主负责人全检 330 TS / 36 Python、类型检查、构建通过；并亲自发起以下六组实际 HTTP MCP 调用。它们均为隔离受控来源/模型，fixture 链接不能当作 A01 真实原文。
+
+| 用例分支 / fixture | 初次实际结果 | 同服务解除故障后 |
+| --- | --- | --- |
+| A11-1 局部正文不足 / partial_body_shortage | one_link，保留后续 102，limitations=material_insufficient | one_link 202，无限制 |
+| A11-1 单条判断失败 / single_judgement_failure | 首条模型503，后续102为one_link，limitations=judgement_incomplete | one_link 202，无限制 |
+| A11-2 整体来源失败 / whole_source_failure | incomplete / source_window / observation_failed，无链接 | one_link 202，无限制 |
+| A11-2 全部正文不足 / all_body_insufficient | incomplete / source_window / material_insufficient，无链接 | one_link 202，无限制 |
+| A11-2 整体判断失败 / whole_judgement_failure | incomplete / judgement_execution，无链接 | one_link 202，无限制 |
+| A02 专用空状态直接发现 / empty_context_direct_discovery | 无问答，one_link 101 | one_link 202，无限制 |
+
+连接分别为 `127.0.0.1:35043 / 42747 / 39899 / 39225 / 41371 / 43821`，端点均 `/mcp`，现已关闭。每组独立 stateDir 与完整可读/结构化结果、模型/来源事件保存在 [controlled-calls.json](/tmp/personal-feed-v0-evidence/controlled-calls.json)。每次前置均为空 facts / generation=0；六组均未更改个人了解，没有 observe/assess 模型调用；五个工具均可列出，解除故障后复用原 MCP 连接成功。临时状态均已删除，全部客户端/服务/fixture 已关闭。
+
+A15 在第一组恢复后的实际链接上执行：save→saved，重复save→already_saved，list→completed且仅一条202，unsave→unsaved，重复unsave→already_unsaved，list→completed且空。个人状态始终不变；该结果是收藏兼容回归，不证明兴趣学习，也没有把收藏写入个人了解。
+
+取消/超时由最终 HTTP 与 elicitation 定向及全检覆盖：前三工具如实 incomplete；收藏/列表未新增结果类别，超时通过当前请求的传输失败结束；同 session 另一问答及后续调用正常。服务关闭已以真实SDK复现并修复客户端pending反例，不能将这些发现范围证据扩称 V1 的 A11-3 全路径通过。
+
+当前判定：**实现与受控自验完成／真实接入待验**。A01 未产生真实原文，A02 真实空状态分支尚未调用；没有替用户勾选价值或业务通过。一次最终候选真实模型/X发现的具体步骤与影响已准备在执行记录，等待该外部动作授权。验收台报告导出成功，备份恢复仍在浏览器本地文件权限处阻塞。原有历史失败和待验项全部保留。

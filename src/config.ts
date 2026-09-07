@@ -7,6 +7,7 @@ export interface OpenAICompatibleConfig {
   readonly model: string
   readonly apiKey: string
   readonly timeoutMs: number
+  readonly responseFormat?: 'json_content' | 'strict_tool'
 }
 
 export function resolveStateDir(environment: NodeJS.ProcessEnv = process.env): string {
@@ -18,8 +19,11 @@ export function resolveStateDir(environment: NodeJS.ProcessEnv = process.env): s
 
 export function parseOpenAICompatibleConfig(input: Readonly<Record<string, unknown>>): OpenAICompatibleConfig {
   const keys = Object.keys(input)
-  if (keys.length !== 4 || keys.some(key => !['baseURL', 'model', 'apiKey', 'timeoutMs'].includes(key))) {
-    throw new PersonalFeedInputError('model config must contain exactly baseURL, model, apiKey and timeoutMs')
+  if (![4, 5].includes(keys.length) || keys.some(key => !['baseURL', 'model', 'apiKey', 'timeoutMs', 'responseFormat'].includes(key))) {
+    throw new PersonalFeedInputError('model config requires baseURL, model, apiKey and timeoutMs; responseFormat is optional')
+  }
+  if ('responseFormat' in input && input.responseFormat !== 'json_content' && input.responseFormat !== 'strict_tool') {
+    throw new PersonalFeedInputError('responseFormat must be json_content or strict_tool')
   }
   const baseURL = requiredString(input.baseURL, 'baseURL').replace(/\/+$/u, '')
   const model = requiredString(input.model, 'model')
@@ -33,7 +37,8 @@ export function parseOpenAICompatibleConfig(input: Readonly<Record<string, unkno
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new PersonalFeedInputError('baseURL must be an absolute HTTP URL')
   }
-  return Object.freeze({ baseURL, model, apiKey, timeoutMs: timeoutMs as number })
+  return Object.freeze({ baseURL, model, apiKey, timeoutMs: timeoutMs as number,
+    ...('responseFormat' in input ? { responseFormat: input.responseFormat as 'json_content' | 'strict_tool' } : {}) })
 }
 
 function requiredString(value: unknown, field: string): string {

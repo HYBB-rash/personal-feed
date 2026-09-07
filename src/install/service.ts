@@ -2,6 +2,7 @@ import { chmod, lstat, mkdir, readFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
+import type { OpenAICompatibleConfig } from '../config.ts'
 import { atomicWrite, backupName, createBackup, isNotFound, readOptional, restoreBackup } from './files.ts'
 
 const execFileAsync = promisify(execFile)
@@ -26,12 +27,7 @@ export interface ServiceInstallOptions {
   readonly configHome: string
   readonly stateHome: string
   readonly mcpToken: string
-  readonly model: {
-    readonly baseURL: string
-    readonly model: string
-    readonly apiKey: string
-    readonly timeoutMs: number
-  }
+  readonly model: OpenAICompatibleConfig
   readonly gitCommit?: () => Promise<string>
   readonly gitStatus?: () => Promise<string>
   readonly serviceUnitTemplate?: string
@@ -130,6 +126,9 @@ function serviceEnvironment(options: ServiceInstallOptions, stateDir: string, st
     `PERSONAL_FEED_MODEL=${environmentValue(options.model.model)}`,
     `PERSONAL_FEED_MODEL_API_KEY=${environmentValue(options.model.apiKey)}`,
     `PERSONAL_FEED_MODEL_TIMEOUT_MS=${environmentValue(String(options.model.timeoutMs))}`,
+    ...(options.model.responseFormat === undefined ? [] : [
+      `PERSONAL_FEED_MODEL_RESPONSE_FORMAT=${environmentValue(options.model.responseFormat)}`,
+    ]),
     '',
   ].join('\n')
 }
@@ -193,6 +192,9 @@ async function inspectStateDirectory(path: string): Promise<'missing' | 'owned'>
 }
 
 function validateSecrets(options: ServiceInstallOptions): void {
+  if ('responseFormat' in options.model && options.model.responseFormat !== 'json_content' && options.model.responseFormat !== 'strict_tool') {
+    throw new Error('responseFormat must be json_content or strict_tool')
+  }
   if (!/^[A-Za-z0-9._~-]{16,512}$/.test(options.mcpToken)) throw new Error('MCP token must be 16-512 URL-safe characters')
   for (const [name, value] of Object.entries({
     modelBaseURL: options.model.baseURL,

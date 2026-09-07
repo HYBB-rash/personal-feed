@@ -111,7 +111,7 @@ describe('PersonalFeedApplication public contract', () => {
       close: vi.fn(async () => undefined),
     } })
     await expect(incomplete.app.request({ currentText: '我长期关注 agent systems' })).resolves.toEqual({
-      status: 'incomplete', stage: 'source_window',
+      status: 'incomplete', stage: 'source_window', reason: 'observation_failed',
     })
     await incomplete.app.close()
   })
@@ -149,7 +149,7 @@ describe('PersonalFeedApplication public contract', () => {
             })),
           ],
         },
-        expected: { status: 'incomplete', stage: 'source_window' },
+        expected: { status: 'incomplete', stage: 'source_window', reason: 'material_insufficient' },
       },
       {
         name: 'failed material',
@@ -161,7 +161,7 @@ describe('PersonalFeedApplication public contract', () => {
             { surface: 'explore', surfaceOrdinal: 2, kind: 'failed' },
           ],
         },
-        expected: { status: 'incomplete', stage: 'source_window' },
+        expected: { status: 'incomplete', stage: 'source_window', reason: 'observation_failed' },
       },
     ] as const
 
@@ -195,6 +195,7 @@ process.stdout.write(JSON.stringify({...result, schemaVersion: 1, requestId: req
 
     await expect(app.request({ currentText: '我长期关注 agent systems' })).resolves.toEqual({
       status: 'incomplete', stage: 'personal_context',
+      question: expect.stringContaining('已有认识'), continuationToken: expect.any(String),
     })
     expect(observer.observe).not.toHaveBeenCalled()
     await app.close()

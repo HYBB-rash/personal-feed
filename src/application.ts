@@ -105,7 +105,8 @@ export interface PersonalFeedModel {
 export type FeedResult =
   | { readonly status: 'one_link'; readonly url: string }
   | { readonly status: 'business_empty' }
-  | { readonly status: 'incomplete'; readonly stage: 'context_observation' | 'personal_context' | 'source_window' | 'judgement_execution' | 'conflict' | 'shutdown' }
+  | { readonly status: 'incomplete'; readonly stage: 'source_window'; readonly reason?: 'material_insufficient' | 'partial_observation' | 'observation_failed' }
+  | { readonly status: 'incomplete'; readonly stage: 'context_observation' | 'personal_context' | 'judgement_execution' | 'conflict' | 'shutdown' }
 
 type QuestionHandoff =
   | { readonly question: string; readonly continuationToken: string }
@@ -173,6 +174,14 @@ export interface CreatePersonalFeedApplicationOptions {
   readonly observer: XObserver
   readonly now?: () => Date
   readonly shutdownTimeoutMs?: number
+  readonly onFailure?: (event: ApplicationFailureEvent) => void
+}
+
+export interface ApplicationFailureEvent {
+  readonly event: 'application_failure'
+  readonly operation: 'observe_context' | 'process_feedback'
+  readonly reason: 'model_incomplete' | 'clarification_invalid' | 'context_changes_invalid'
+    | 'sufficiency_invalid' | 'missing_clarification' | 'context_conflict' | 'cancelled' | 'invalid_association'
 }
 
 type ContextState = {
@@ -231,6 +240,11 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
   const savedPath = join(options.stateDir, 'saved.jsonl')
   let closed = false
 
+  const report = (operation: ApplicationFailureEvent['operation'], reason: ApplicationFailureEvent['reason']): void => {
+    try { options.onFailure?.(Object.freeze({ event: 'application_failure', operation, reason })) }
+    catch { /* Diagnostics cannot change the result or commit behavior. */ }
+  }
+
   const signalFor = (call?: CallOptions): AbortSignal => {
     if (closed) throw new PersonalFeedClosedError()
     if (call?.signal !== undefined && !(call.signal instanceof AbortSignal)) {
@@ -263,40 +277,51 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
   const observeContextWithSignal = async (currentText: string, signal: AbortSignal, assessForFeed = false,
     token?: string): Promise<ContextPreparation> => {
     const prior = token === undefined ? undefined : pending.get(token)
-    const incomplete = (stage: 'context_observation' | 'conflict' = 'context_observation'): ContextPreparation => Object.freeze({
+    const incomplete = (stage: 'context_observation' | 'conflict' = 'context_observation',
+      reason: ApplicationFailureEvent['reason'] = stage === 'conflict' ? 'context_conflict' : 'model_incomplete'): ContextPreparation => {
+      report('observe_context', reason)
+      return Object.freeze({
       result: Object.freeze({ status: 'incomplete', stage, ...(prior?.tool === 'context' ? questionPair(token, prior) : {}) }), effectiveFacts: [],
-    })
-    if (token !== undefined && prior?.tool !== 'context') return incomplete()
+      })
+    }
+    if (token !== undefined && prior?.tool !== 'context') return incomplete('context_observation', 'invalid_association')
     assessForFeed = assessForFeed || prior?.resumeFeed === true
     const before = await contextQueue.run(async () => loadContext(contextPath))
-    if (signal.aborted) return incomplete()
+    if (signal.aborted) return incomplete('context_observation', 'cancelled')
     let interpreted: Awaited<ReturnType<PersonalFeedModel['observeContext']>>
     try {
       interpreted = await options.model.observeContext({
         currentText, activeFacts: before.facts, signal, ...(assessForFeed ? { assessForFeed: true } : {}),
         ...(prior === undefined ? {} : { clarification: prior.clarification }),
       })
-      if (signal.aborted || (interpreted.status !== 'applied' && interpreted.status !== 'ignored')
-        || !validRemaining(interpreted.remaining, prior !== undefined)
-        || interpreted.resolvedReferenceText !== undefined && !validModelText(interpreted.resolvedReferenceText)) return incomplete()
+      if (signal.aborted) return incomplete('context_observation', 'cancelled')
+      if (interpreted.status !== 'applied' && interpreted.status !== 'ignored') return incomplete()
+      if (!validRemaining(interpreted.remaining, prior !== undefined)
+        || interpreted.resolvedReferenceText !== undefined && !validModelText(interpreted.resolvedReferenceText)) {
+        return incomplete('context_observation', 'clarification_invalid')
+      }
     } catch { return incomplete() }
     const sufficient = interpreted.sufficient
-    if (assessForFeed && typeof sufficient !== 'boolean') return incomplete()
+    if (assessForFeed && typeof sufficient !== 'boolean') return incomplete('context_observation', 'sufficiency_invalid')
     const applied = interpreted.status === 'applied'
       ? applyContextChanges(before.facts, interpreted.changes)
       : { facts: before.facts, appliedCount: 0 }
-    if (applied === undefined) return incomplete()
+    if (applied === undefined) return incomplete('context_observation', 'context_changes_invalid')
     const effectiveFacts = Object.freeze(applied.facts.filter(fact => fact.lane !== 'existing_knowledge' || fact.epistemic === 'asserted'))
     const ready = sufficient === true && contextIsSufficient(effectiveFacts)
-    // A waiting request must keep a usable question until its facts are sufficient.
-    if (prior?.resumeFeed && !ready && interpreted.remaining == null) return incomplete()
+    // Missing categories are observable facts, not model-inferred knowledge.
+    // Semantic gaps still require the model's specific question.
+    const remaining = assessForFeed && !ready
+      ? interpreted.remaining ?? missingContextQuestion(effectiveFacts)
+      : interpreted.remaining
+    if (assessForFeed && !ready && remaining == null) return incomplete('context_observation', 'missing_clarification')
     return contextQueue.run(async () => {
       const latest = await loadContext(contextPath)
       if (latest.generation !== before.generation || token !== undefined && pending.get(token) !== prior) return incomplete('conflict')
-      if (signal.aborted) return incomplete()
+      if (signal.aborted) return incomplete('context_observation', 'cancelled')
       const next: ContextState = { schemaVersion: 1, generation: latest.generation + 1, facts: applied.facts }
       await atomicWriteJson(contextPath, next)
-      const pair = finishQuestion('context', currentText, interpreted.remaining, token, prior, undefined, interpreted.resolvedReferenceText, assessForFeed && !ready)
+      const pair = finishQuestion('context', currentText, remaining, token, prior, undefined, interpreted.resolvedReferenceText, assessForFeed && !ready)
       return Object.freeze({
         result: interpreted.status === 'ignored'
           ? Object.freeze({ status: 'ignored' as const, ...pair })
@@ -357,13 +382,12 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
         signal,
       })
     } catch {
-      return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+      return Object.freeze({ status: 'incomplete', stage: 'source_window', reason: 'observation_failed' })
     }
-    if (signal.aborted || observedWindow.status === 'incomplete') {
-      return Object.freeze({ status: 'incomplete', stage: 'source_window' })
-    }
+    if (signal.aborted) return Object.freeze({ status: 'incomplete', stage: 'source_window', reason: 'observation_failed' })
+    if (observedWindow.status === 'incomplete') return Object.freeze({ status: 'incomplete', stage: 'source_window', reason: observedWindow.reason })
     const candidates = uniqueCandidates(observedWindow.candidates)
-    if (candidates === undefined) return Object.freeze({ status: 'incomplete', stage: 'source_window' })
+    if (candidates === undefined) return Object.freeze({ status: 'incomplete', stage: 'source_window', reason: 'material_insufficient' })
     const startRecords = await loadCandidateRecords(candidatesPath)
     const processed = new Set(startRecords.map(record => record.stableId))
     for (const candidate of candidates) {
@@ -409,11 +433,14 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     const token = optionalToken(input.continuationToken)
     const signal = signalFor(call)
     const prior = token === undefined ? undefined : pending.get(token)
-    const incomplete = (stage: 'feedback_interpretation' | 'conflict' = 'feedback_interpretation'): ProcessFeedbackResult =>
-      Object.freeze({ status: 'incomplete', stage, ...(prior?.tool === 'feedback' ? questionPair(token, prior) : {}) })
-    if (token !== undefined && prior?.tool !== 'feedback') return incomplete()
+    const incomplete = (stage: 'feedback_interpretation' | 'conflict' = 'feedback_interpretation',
+      reason: ApplicationFailureEvent['reason'] = stage === 'conflict' ? 'context_conflict' : 'model_incomplete'): ProcessFeedbackResult => {
+      report('process_feedback', reason)
+      return Object.freeze({ status: 'incomplete', stage, ...(prior?.tool === 'feedback' ? questionPair(token, prior) : {}) })
+    }
+    if (token !== undefined && prior?.tool !== 'feedback') return incomplete('feedback_interpretation', 'invalid_association')
     const before = await contextQueue.run(async () => loadContext(contextPath))
-    if (signal.aborted) return incomplete()
+    if (signal.aborted) return incomplete('feedback_interpretation', 'cancelled')
     let interpreted: Awaited<ReturnType<PersonalFeedModel['interpretFeedback']>>
     try {
       const resolvedReference = prior === undefined ? referenceText : prior.clarification.referenceText
@@ -422,21 +449,22 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
         ...(resolvedReference === undefined ? {} : { referenceText: resolvedReference }),
         ...(prior === undefined ? {} : { clarification: prior.clarification }), signal,
       })
-      if (signal.aborted || !['pass', 'discarded', 'needs_input', 'completed'].includes(interpreted.status)
-        || !validRemaining(interpreted.remaining, prior !== undefined)
+      if (signal.aborted) return incomplete('feedback_interpretation', 'cancelled')
+      if (!['pass', 'discarded', 'needs_input', 'completed'].includes(interpreted.status)) return incomplete()
+      if (!validRemaining(interpreted.remaining, prior !== undefined)
         || interpreted.resolvedReferenceText !== undefined && !validModelText(interpreted.resolvedReferenceText)
         || interpreted.status === 'needs_input' && interpreted.remaining == null
         || interpreted.status === 'completed' && (
           !validModelText(interpreted.targetText) || !['like', 'dislike'].includes(interpreted.sentiment)
-          || interpreted.sentiment === 'dislike' && !validModelText(interpreted.reason))) return incomplete()
+          || interpreted.sentiment === 'dislike' && !validModelText(interpreted.reason))) return incomplete('feedback_interpretation', 'clarification_invalid')
     } catch { return incomplete() }
     const applied = interpreted.changes === undefined ? { facts: before.facts, appliedCount: 0 }
       : applyContextChanges(before.facts, interpreted.changes)
-    if (applied === undefined) return incomplete()
+    if (applied === undefined) return incomplete('feedback_interpretation', 'context_changes_invalid')
     return contextQueue.run(async () => {
       const latest = await loadContext(contextPath)
       if (latest.generation !== before.generation || token !== undefined && pending.get(token) !== prior) return incomplete('conflict')
-      if (signal.aborted) return incomplete()
+      if (signal.aborted) return incomplete('feedback_interpretation', 'cancelled')
       // Save facts before the feedback ledger. A storage fault leaves the question
       // usable; the next interpretation re-reads these facts instead of replaying changes.
       if (interpreted.changes !== undefined) await atomicWriteJson(contextPath, {
@@ -521,7 +549,10 @@ export function createPersonalFeedApplication(options: CreatePersonalFeedApplica
     const idle = Promise.all([
       requestQueue.idle(), contextQueue.idle(), savedQueue.idle(),
     ]).then(() => undefined)
-    await Promise.race([idle, new Promise<void>(resolve => setTimeout(resolve, shutdownTimeoutMs))])
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([idle, new Promise<void>(resolve => { deadline = setTimeout(resolve, shutdownTimeoutMs) })])
+    } finally { clearTimeout(deadline) }
   }
 
   return Object.freeze({ request, observeContext, processFeedback, recordFeedback, listSaved, close })
@@ -664,6 +695,24 @@ function sameFact(left: PersonalContextFact, right: PersonalContextFact): boolea
 function contextIsSufficient(facts: readonly PersonalContextFact[]): boolean {
   return facts.some(fact => fact.lane === 'long_term_interest' && fact.stance === 'include')
     && facts.some(fact => fact.lane === 'existing_knowledge')
+}
+
+function missingContextQuestion(facts: readonly PersonalContextFact[]): RemainingClarification | undefined {
+  const missingInterest = !facts.some(fact => fact.lane === 'long_term_interest' && fact.stance === 'include')
+  const missingKnowledge = !facts.some(fact => fact.lane === 'existing_knowledge' && fact.epistemic === 'asserted')
+  if (missingInterest && missingKnowledge) return {
+    question: '你的长期关注是什么？关于这些方向，你已经了解哪些内容，或有哪些明确的已有认识？',
+    unresolvedScope: 'Missing explicit long-term interests and confirmed knowledge boundaries for those interests.',
+  }
+  if (missingInterest) return {
+    question: '你的长期关注是什么？已有认识会保留，请说明你希望持续了解的方向。',
+    unresolvedScope: 'Missing explicit long-term interests; retain already confirmed knowledge.',
+  }
+  if (missingKnowledge) return {
+    question: '关于你已经说明的长期关注，你有哪些已有认识、了解过的内容，或明确的新手知识边界？',
+    unresolvedScope: 'Missing confirmed knowledge boundaries relevant to the saved long-term interests; do not ask to restate those interests.',
+  }
+  return undefined
 }
 
 async function loadCandidateRecords(path: string): Promise<CandidateRecord[]> {

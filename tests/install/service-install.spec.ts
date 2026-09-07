@@ -2,6 +2,7 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { runPersonalFeedCli } from '../../src/cli.ts'
 import { installUserService, rollbackUserService } from '../../src/install/service.ts'
 
 describe('user service installer', () => {
@@ -42,6 +43,7 @@ describe('user service installer', () => {
     expect(env).toContain('PERSONAL_FEED_MODEL_API_KEY="model key \\"quote\\" \\\\ value"')
     expect(env).toContain('PERSONAL_FEED_MODEL_BASE_URL="http://127.0.0.1:18080/v1"')
     expect(env).toContain('PERSONAL_FEED_STATE_DIR="')
+    expect(env).not.toContain('PERSONAL_FEED_MODEL_RESPONSE_FORMAT')
     expect((await lstat(envPath)).mode & 0o777).toBe(0o600)
     const unit = await readFile(join(fixture.configHome, 'systemd/user/personal-feed.service'), 'utf8')
     expect(unit).toContain('# template-source')
@@ -65,6 +67,38 @@ describe('user service installer', () => {
     })
     await expect(lstat(envPath)).rejects.toMatchObject({ code: 'ENOENT' })
     await expect(readFile(trialState, 'utf8')).resolves.toBe('{"saved":true}\n')
+  })
+
+  it.each(['json_content', 'strict_tool'] as const)('installs %s from the CLI into the private EnvironmentFile', async responseFormat => {
+    const fixture = await makeFixture()
+    await runPersonalFeedCli(['service', 'install', '--apply'], {
+      environment: {
+        HOME: fixture.root,
+        XDG_CONFIG_HOME: fixture.configHome,
+        XDG_STATE_HOME: fixture.stateHome,
+        PERSONAL_FEED_MCP_TOKEN: fixture.options.mcpToken,
+        PERSONAL_FEED_MODEL_BASE_URL: fixture.options.model.baseURL,
+        PERSONAL_FEED_MODEL: fixture.options.model.model,
+        PERSONAL_FEED_MODEL_API_KEY: fixture.options.model.apiKey,
+        PERSONAL_FEED_MODEL_RESPONSE_FORMAT: responseFormat,
+      },
+      cwd: () => fixture.root,
+      installService: options => installUserService({ ...fixture.options, ...options }),
+      rollbackService: vi.fn(), serve: vi.fn(), write: vi.fn(),
+    })
+    const envPath = join(fixture.configHome, 'personal-feed/service.env')
+    expect(await readFile(envPath, 'utf8')).toContain(`PERSONAL_FEED_MODEL_RESPONSE_FORMAT="${responseFormat}"\n`)
+    expect((await lstat(envPath)).mode & 0o777).toBe(0o600)
+  })
+
+  it.each(['check', 'apply'] as const)('rejects an invalid response format before any installer effects in %s', async mode => {
+    const fixture = await makeFixture()
+    await expect(installUserService({
+      ...fixture.options, mode, model: { ...fixture.options.model, responseFormat: 'invented' as never },
+    })).rejects.toThrow(/responseFormat/)
+    expect(fixture.run).not.toHaveBeenCalled()
+    expect(fixture.gitStatus).not.toHaveBeenCalled()
+    await expect(lstat(join(fixture.configHome, 'personal-feed/service.env'))).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('refuses unowned service files and symlinks without changing them', async () => {

@@ -79,8 +79,11 @@ describe('standalone MCP end to end', () => {
 
     const result = await client.callTool({ name: 'request', arguments: { currentText: '给我一条 Personal Feed。' } })
     expect(result.isError).not.toBe(true)
-    expect(result.structuredContent).toEqual({ status: 'incomplete', stage: scenario.stage })
-    expect(result.content).toEqual([{ type: 'text', text: expect.stringContaining('未完成') }])
+    expect(result.structuredContent).toEqual({ status: 'incomplete', stage: scenario.stage,
+      ...(!scenario.sufficient ? { question: '具体了解哪些可靠性方法？', continuationToken: expect.any(String) } : {}),
+      ...(scenario.invalidMaterial ? { reason: 'material_insufficient' } : {}),
+    })
+    expect(result.content).toEqual([{ type: 'text', text: expect.stringContaining(!scenario.sufficient ? '等待你补充信息' : scenario.invalidMaterial ? '无法完成' : '未完成') }])
     expect(observed).toBe(scenario.observed)
   })
 
@@ -221,6 +224,8 @@ async function startFakeOpenAI(options: {
         result = {
           status: 'applied',
           ...(payload.assessForFeed === true ? { sufficient: options.sufficient ?? true } : {}),
+          ...(payload.assessForFeed === true && options.sufficient === false
+            ? { remaining: { question: '具体了解哪些可靠性方法？', unresolvedScope: 'knowledge of reliability methods' } } : {}),
           changes: { additions: [
             { lane: 'long_term_interest', statement: 'reliable systems', stance: 'include' },
             { lane: 'existing_knowledge', statement: 'basic reliability concepts', epistemic: 'asserted' },

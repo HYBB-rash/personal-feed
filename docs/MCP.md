@@ -20,6 +20,7 @@
 |---|---|---|
 | `request`、`observe_context`、`process_feedback` 的业务结果 | `question?`、`continuationToken?` | 必须同时出现或同时省略；`question` 是非空字符串。`process_feedback.needs_input` 仍必须带齐这两个字段 |
 | `observe_context`、`process_feedback` 的业务结果 | `feed?` | 表示应用在这次更新之后实际继续原 Feed 得到的结果；未尝试续做时省略 |
+| 顶层或嵌套 Feed 的 `incomplete/source_window` | `reason?` | 仅允许 `observation_failed`、`partial_observation`、`material_insufficient`，分别表示获取失败、部分观察、材料不足；其他阶段和结果不接受该字段 |
 | `request` 输入、`record_feedback`、`list_saved` | 无增量 | `request` 不接受续答标记，收藏工具不承载问题或 Feed |
 
 `feed` 只允许以下三种严格形状：
@@ -27,7 +28,8 @@
 ```ts
 { status: 'one_link', url: string }
 { status: 'business_empty' }
-{ status: 'incomplete', stage: 'context_observation' | 'personal_context' | 'source_window' | 'judgement_execution' | 'conflict' | 'shutdown' }
+{ status: 'incomplete', stage: 'source_window', reason?: 'observation_failed' | 'partial_observation' | 'material_insufficient' }
+{ status: 'incomplete', stage: 'context_observation' | 'personal_context' | 'judgement_execution' | 'conflict' | 'shutdown' }
 ```
 
 嵌套 `feed` 不允许问题、token 或下一层 `feed`。剩余问题只放外层，问题与 Feed 结果可以同时出现；接入同时呈现两者，不把更新成功误解成 Feed 成功，也不把仍有问题误解成没有 Feed 结果。`request` 使用自己的顶层 Feed 结果，不嵌套 `feed`。
@@ -44,7 +46,7 @@
 }
 ```
 
-这是字段示例，不代表当前默认应用已实现个人信息澄清或 Feed 自动续做。重复字母标记仅为夹具，实际关联继续使用既有随机标记。
+这是字段示例，不是实际验收结果。重复字母标记仅为夹具，实际关联使用随机标记。
 
 ## 调用与呈现
 
@@ -54,6 +56,8 @@
 - 调用方在当前有效问答内自动携带 `continuationToken`，保持本条 `currentText` 原样，不重发旧请求、不把旧原文拼成新的用户消息。`request` 不接收标记。
 - 只为本次关联更新标记：返回了新的问题/token 对就使用该对；对应调用没有返回剩余问题时结束该关联。无关的普通调用或收藏结果不用于清除另一条问答的标记。关联中断后不猜测或重建它，不建立跨会话恢复设施。
 - `request` 的 `incomplete/personal_context` 带问题时表示等待补充；不带问题时仍按普通未完成呈现。`ignored` 或 `applied` 带问题也继续呈现问题。
+- 回答调用返回 `incomplete` 并保留问题/token 时，说明这次回答尚未处理成功，问题是上次保留的续答关联，不是针对最新回答的新追问。不得据此声称最新回答已记住，或继续沿用旧问题里的判断来评价用户。
+- 来源未完成有 `reason` 时按本次实际原因呈现；旧结果没有 `reason` 时只说明已知的来源阶段，不猜测具体原因。
 - 问题与 `feed` 同时出现时同时呈现；没有问题时不自行补问。调用方不得因为 `feed` 存在或个人信息变得足够，再额外调用一次 `request`；普通更新没有 `feed` 就只呈现更新结果。
 
 token 保持 32 字节随机值编码成的 43 字符 base64url 格式，不展示给用户，不进入可读文本或日志。格式非法为 MCP 输入错误；格式合法但无法关联时，`observe_context` 返回 `incomplete/context_observation`，`process_feedback` 返回 `incomplete/feedback_interpretation`，不制造新问题、修改个人信息或重跑 Feed。
@@ -64,6 +68,6 @@ token 保持 32 字节随机值编码成的 43 字符 base64url 格式，不展�
 
 ## 当前支持边界
 
-D01 已实现上述类型、MCP 校验、透传和可读结果组合。默认应用仍未实现个人信息问答关联或自动续做；它对 `observe_context` 中格式合法的 token 返回 `incomplete/context_observation`，不解释这条回答或改变资料。无 token 的既有更新、Feed 请求和有效反馈续答保持原有行为。
+默认应用已实现个人信息澄清、局部更新和原 Feed 自动续做。服务依据已提交事实为明确缺少的类别提供追问；语义或适用范围不清时使用模型的问题。缺少两类信息之一时不能仅凭模型声称足够就开始筛选。信息类别齐备但模型认为不足、又没有提供具体问题时，返回个人信息处理未完成，不猜测缺口。
 
-接入测试用受控应用返回验证字段及呈现，真实应用测试验证失效标记无副作用；它们不证明 D05/D06 已能产生问题或继续 Feed，也不替代真实对话、模型或 X 使用验收。完整业务交接要求见 [D00 合同](d00-handoff.md)。
+问答关联仅在当前进程中有效，重启保留已经提交的个人信息，不恢复旧问题或未完成请求。接入测试、真实应用加受控模型的测试，以及真实模型和 X 使用验收分别记录，不能互相替代。完整业务交接要求见 [D00 合同](d00-handoff.md)。

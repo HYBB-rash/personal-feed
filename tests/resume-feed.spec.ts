@@ -138,7 +138,6 @@ describe('continue the original Feed after clarification', () => {
   it.each([
     { status: 'incomplete' },
     { status: 'ignored', remaining: gap },
-    { status: 'ignored', sufficient: false, remaining: null },
   ])('retains the original association when preparation cannot finish: %j', async response => {
     const f = await fixture()
     const token = await f.waiting()
@@ -172,7 +171,8 @@ describe('continue the original Feed after clarification', () => {
     f.respond({ status: 'applied', changes: additions, sufficient: true, remaining: doubt })
     const result = await f.app.observeContext({ currentText: 'I am a novice.', continuationToken: token })
     expect(result.feed).toEqual(outcome === 'empty' ? { status: 'business_empty' }
-      : { status: 'incomplete', stage: outcome === 'source' ? 'source_window' : 'judgement_execution' })
+      : outcome === 'source' ? { status: 'incomplete', stage: 'source_window', reason: 'observation_failed' }
+        : { status: 'incomplete', stage: 'judgement_execution' })
     expect(await f.facts()).toEqual([interest, knowledge])
     f.respond({ status: 'ignored', remaining: null })
     expect(await f.app.observeContext({ currentText: 'Leave the doubt unresolved.', continuationToken: result.continuationToken }))

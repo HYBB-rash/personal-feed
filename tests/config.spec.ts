@@ -7,7 +7,7 @@ describe('standalone configuration', () => {
     expect(resolveStateDir({ HOME: '/tmp/example-home' })).toBe('/tmp/example-home/.local/state/personal-feed')
   })
 
-  it('accepts only the four OpenAI-compatible adapter fields', () => {
+  it('requires the base OpenAI-compatible adapter fields and rejects unknown options', () => {
     expect(parseOpenAICompatibleConfig({
       baseURL: 'http://127.0.0.1:11434/v1/',
       model: 'local-model',
@@ -21,6 +21,6 @@ describe('standalone configuration', () => {
     })
     expect(() => parseOpenAICompatibleConfig({
       baseURL: 'http://127.0.0.1:11434/v1', model: 'local-model', apiKey: 'local-key', timeoutMs: 30_000, provider: 'extra',
-    })).toThrow(/exactly/u)
+    })).toThrow(/model config/u)
   })
 })

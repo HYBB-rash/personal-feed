@@ -75,7 +75,7 @@ describe('D01 MCP handoff boundary with a controlled application', () => {
     expect(result.structuredContent).toEqual({ ...outcome, ...questionPair })
     expect(readable(result)).toContain(question)
     expect(readable(result)).toContain(outcome.status === 'one_link' ? url
-      : outcome.status === 'business_empty' ? '暂时没有' : 'source_window')
+      : outcome.status === 'business_empty' ? '暂时没有' : '来源观察未完成')
     expect(readable(result)).not.toContain(continuationToken)
   })
 
@@ -100,6 +100,28 @@ describe('D01 MCP handoff boundary with a controlled application', () => {
   })
 
   it.each([
+    { status: 'one_link', url },
+    { status: 'business_empty' },
+    { status: 'incomplete', stage: 'source_window', reason: 'material_insufficient' },
+  ] as const)('distinguishes an executed Feed from the remaining optional context question for $status', async feed => {
+    const { client, application } = await fixture()
+    const outcome = { status: 'applied', appliedCount: 1, ...questionPair, feed } as const
+    application.observeContext.mockResolvedValueOnce(outcome)
+    const result = await client.callTool({ name: 'observe_context', arguments: { currentText: '补充资料。', continuationToken } })
+    expect(result.isError).not.toBe(true)
+    expect(result.structuredContent).toEqual(outcome)
+    const text = readable(result)
+    expect(text).toContain('原请求已继续执行')
+    expect(text).toContain('仍可补充的问题')
+    expect(text).toContain('继续回答不会重复执行本次 Feed')
+    expect(text).toContain(question)
+    expect(text).not.toContain('正在等待你补充信息')
+    expect(text).not.toContain(continuationToken)
+    if (feed.status === 'incomplete') expect(text).toContain('来源正文不足，无法完成判断')
+    expect(application.request).not.toHaveBeenCalled()
+  })
+
+  it.each([
     { status: 'business_empty' },
     { status: 'incomplete', stage: 'source_window' },
     { status: 'incomplete', stage: 'judgement_execution' },
@@ -110,7 +132,7 @@ describe('D01 MCP handoff boundary with a controlled application', () => {
     expect(result.isError).not.toBe(true)
     expect(result.structuredContent).toEqual({ status: 'applied', appliedCount: 1, feed })
     expect(readable(result)).toContain('applied')
-    expect(readable(result)).toContain(feed.status === 'business_empty' ? '暂时没有' : feed.stage)
+    expect(readable(result)).toContain(feed.status === 'business_empty' ? '暂时没有' : feed.stage === 'source_window' ? '来源观察未完成' : '对内容是否符合条件的判断未完成')
     expect(application.request).not.toHaveBeenCalled()
   })
 
@@ -135,6 +157,59 @@ describe('D01 MCP handoff boundary with a controlled application', () => {
     expect(application.processFeedback).toHaveBeenCalledWith(input, expect.objectContaining({ signal: expect.any(AbortSignal) }))
     expect(application.request).not.toHaveBeenCalled()
     expect(application.observeContext).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['observation_failed', '获取来源失败'],
+    ['partial_observation', '仅完成部分来源观察'],
+    ['material_insufficient', '来源正文不足'],
+  ] as const)('preserves source reason %s at the top level and in a resumed Feed', async (reason, message) => {
+    const { client, application } = await fixture()
+    const feed = { status: 'incomplete', stage: 'source_window', reason } as const
+    application.request.mockResolvedValueOnce(feed)
+    application.observeContext.mockResolvedValueOnce({ status: 'applied', appliedCount: 1, feed })
+    application.processFeedback.mockResolvedValueOnce({ status: 'completed', feed })
+    for (const name of ['request', 'observe_context', 'process_feedback']) {
+      const result = await client.callTool({ name, arguments: { currentText: '请求或补充。' } })
+      expect(result.isError).not.toBe(true)
+      expect(result.structuredContent).toEqual(name === 'request' ? feed : name === 'observe_context' ? { status: 'applied', appliedCount: 1, feed } : { status: 'completed', feed })
+      expect(readable(result)).toContain(message)
+      expect(readable(result)).not.toContain(reason)
+      expect(readable(result)).not.toContain('暂时没有')
+    }
+  })
+
+  it.each(['observe_context', 'process_feedback'] as const)('marks a retained old question after an unsuccessful reply in %s', async name => {
+    const { client, application } = await fixture()
+    if (name === 'observe_context') application.observeContext.mockResolvedValueOnce({ status: 'incomplete', stage: 'context_observation', ...questionPair })
+    else application.processFeedback.mockResolvedValueOnce({ status: 'incomplete', stage: 'feedback_interpretation', ...questionPair })
+    const result = await client.callTool({ name, arguments: { currentText: '本次回答。', continuationToken } })
+    expect(result.isError).not.toBe(true)
+    expect(readable(result)).toContain('这次回答尚未处理成功')
+    expect(readable(result)).toContain(`上次保留的问题：${question}`)
+    expect(readable(result)).not.toContain(continuationToken)
+  })
+
+  it.each([
+    ['request', 'context_observation', '对本次信息的理解未完成'],
+    ['request', 'personal_context', '个人信息准备未完成'],
+    ['request', 'source_window', '来源观察未完成'],
+    ['request', 'judgement_execution', '对内容是否符合条件的判断未完成'],
+    ['request', 'conflict', '信息状态发生冲突，本次处理未完成'],
+    ['request', 'shutdown', '服务正在停止，本次处理未完成'],
+    ['process_feedback', 'feedback_interpretation', '对本次反馈的理解未完成'],
+    ['process_feedback', 'feedback_commit', '对本次反馈的保存未完成'],
+  ] as const)('explains incomplete %s / %s in Chinese without exposing the internal stage', async (name, stage, message) => {
+    const { client, application } = await fixture()
+    const outcome = { status: 'incomplete', stage } as const
+    if (name === 'request') application.request.mockResolvedValueOnce(outcome as never)
+    else application.processFeedback.mockResolvedValueOnce(outcome as never)
+    const result = await client.callTool({ name, arguments: { currentText: '本次请求或反馈。' } })
+    expect(result.isError).not.toBe(true)
+    expect(result.structuredContent).toEqual(outcome)
+    expect(readable(result)).toContain(message)
+    expect(readable(result)).not.toContain(stage)
+    expect(readable(result)).not.toContain('暂时没有')
   })
 
   it('keeps a standalone update standalone and an ordinary incomplete distinct from waiting', async () => {
@@ -166,6 +241,12 @@ describe('D01 MCP handoff boundary with a controlled application', () => {
   })
 
   it.each([
+    ['request', 'reason on business empty', { status: 'business_empty', reason: 'observation_failed' }],
+    ['request', 'reason on another stage', { status: 'incomplete', stage: 'personal_context', reason: 'observation_failed' }],
+    ['request', 'unknown source reason', { status: 'incomplete', stage: 'source_window', reason: 'invented' }],
+    ['observeContext', 'reason on outer update', { status: 'incomplete', stage: 'context_observation', reason: 'observation_failed' }],
+    ['observeContext', 'reason on non-source feed', { status: 'ignored', feed: { status: 'incomplete', stage: 'judgement_execution', reason: 'observation_failed' } }],
+    ['processFeedback', 'reason on outer feedback', { status: 'incomplete', stage: 'feedback_commit', reason: 'observation_failed' }],
     ['request', 'question without token', { status: 'business_empty', question }],
     ['request', 'token without question', { status: 'business_empty', continuationToken }],
     ['request', 'nested Feed on request', { status: 'business_empty', feed: { status: 'business_empty' } }],

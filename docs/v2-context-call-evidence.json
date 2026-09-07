@@ -1,0 +1,223 @@
+[
+  {
+    "case": "A02-1",
+    "input": "给我一次个人 Feed",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 正在等待你补充信息。\n你的长期关注是什么？关于这个方向，你已经了解哪些内容？"
+        }
+      ],
+      "structuredContent": {
+        "status": "incomplete",
+        "stage": "personal_context",
+        "question": "你的长期关注是什么？关于这个方向，你已经了解哪些内容？"
+      }
+    },
+    "hasContinuation": true
+  },
+  {
+    "case": "A02-1",
+    "input": "就想看些有用的东西，具体方向还没想好。",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 结果：ignored。\n你的长期关注是什么？关于这个方向，你已经了解哪些内容？"
+        }
+      ],
+      "structuredContent": {
+        "status": "ignored",
+        "question": "你的长期关注是什么？关于这个方向，你已经了解哪些内容？"
+      }
+    },
+    "hasContinuation": true
+  },
+  {
+    "case": "A02-1",
+    "input": "我的长期关注是：一个人怎样用 AI 完成有叙事、有表达的短视频。我重视能反复使用的制作方法、实际制作过程和失败经验。",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 结果：applied。\n关于这个方向（用 AI 制作有叙事、有表达的短视频），你已经了解或实践过哪些内容？"
+        }
+      ],
+      "structuredContent": {
+        "status": "applied",
+        "appliedCount": 1,
+        "question": "关于这个方向（用 AI 制作有叙事、有表达的短视频），你已经了解或实践过哪些内容？"
+      }
+    },
+    "hasContinuation": true
+  },
+  {
+    "case": "A02-1",
+    "input": "我已经知道 AI 可以生成画面和配音，剪辑还需要处理镜头衔接和节奏。目前我的判断是：单人短视频适合由一个 AI 助手贯穿从脚本到剪辑的流程。另外，我已经知道多个 AI 助手可以分工，但需要明确交接并检查结果。",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 结果：applied。\nPersonal Feed 对内容是否符合条件的判断未完成。"
+        }
+      ],
+      "structuredContent": {
+        "status": "applied",
+        "appliedCount": 3,
+        "feed": {
+          "status": "incomplete",
+          "stage": "judgement_execution"
+        }
+      }
+    },
+    "hasContinuation": false
+  },
+  {
+    "case": "A02-2",
+    "input": "我的长期关注是：一个人怎样用 AI 完成有叙事、有表达的短视频。我重视能反复使用的制作方法、实际制作过程和失败经验。",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 结果：applied。"
+        }
+      ],
+      "structuredContent": {
+        "status": "applied",
+        "appliedCount": 2
+      }
+    },
+    "hasContinuation": false
+  },
+  {
+    "case": "A02-2",
+    "input": "给我一次个人 Feed",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 正在等待你补充信息。\n关于用 AI 完成有叙事、有表达的短视频，你已经了解或尝试到什么程度（比如用过哪些工具、大概的熟练阶段）？"
+        }
+      ],
+      "structuredContent": {
+        "status": "incomplete",
+        "stage": "personal_context",
+        "question": "关于用 AI 完成有叙事、有表达的短视频，你已经了解或尝试到什么程度（比如用过哪些工具、大概的熟练阶段）？"
+      }
+    },
+    "hasContinuation": true
+  },
+  {
+    "case": "A02-2",
+    "input": "了解过一些，具体说不太清。",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 结果：ignored。\n你具体了解或尝试过哪些 AI 视频工具（比如可灵、Runway、Sora、剪映、Midjourney 配图等），大致处于哪个熟练阶段？能举一两个实际用过的例子会很有帮助。"
+        }
+      ],
+      "structuredContent": {
+        "status": "ignored",
+        "question": "你具体了解或尝试过哪些 AI 视频工具（比如可灵、Runway、Sora、剪映、Midjourney 配图等），大致处于哪个熟练阶段？能举一两个实际用过的例子会很有帮助。"
+      }
+    },
+    "hasContinuation": true
+  },
+  {
+    "case": "A02-2",
+    "input": "我已经知道 AI 可以生成画面和配音，剪辑还需要处理镜头衔接和节奏。目前我的判断是：单人短视频适合由一个 AI 助手贯穿从脚本到剪辑的流程。另外，我已经知道多个 AI 助手可以分工，但需要明确交接并检查结果。",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 结果：applied。\nPersonal Feed 来源正文不足，无法完成判断。\n你仍没说明具体用过或深入了解过哪些 AI 视频工具（如可灵、Runway、Sora、剪映、Midjourney 配图等）以及大致熟练程度——能举一两个实际例子吗？"
+        }
+      ],
+      "structuredContent": {
+        "status": "applied",
+        "appliedCount": 3,
+        "question": "你仍没说明具体用过或深入了解过哪些 AI 视频工具（如可灵、Runway、Sora、剪映、Midjourney 配图等）以及大致熟练程度——能举一两个实际例子吗？",
+        "feed": {
+          "status": "incomplete",
+          "stage": "source_window",
+          "reason": "material_insufficient"
+        }
+      }
+    },
+    "hasContinuation": true
+  },
+  {
+    "case": "A02-3",
+    "input": "我已经知道 AI 可以生成画面和配音，剪辑还需要处理镜头衔接和节奏。目前我的判断是：单人短视频适合由一个 AI 助手贯穿从脚本到剪辑的流程。另外，我已经知道多个 AI 助手可以分工，但需要明确交接并检查结果。",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 结果：applied。"
+        }
+      ],
+      "structuredContent": {
+        "status": "applied",
+        "appliedCount": 3
+      }
+    },
+    "hasContinuation": false
+  },
+  {
+    "case": "A02-3",
+    "input": "给我一次个人 Feed",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 正在等待你补充信息。\n你希望 Feed 聚焦的长期关注是什么方向？"
+        }
+      ],
+      "structuredContent": {
+        "status": "incomplete",
+        "stage": "personal_context",
+        "question": "你希望 Feed 聚焦的长期关注是什么方向？"
+      }
+    },
+    "hasContinuation": true
+  },
+  {
+    "case": "A02-3",
+    "input": "随便看看吧，还没有想清楚方向。",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 结果：ignored。\n你希望 Feed 聚焦的长期关注是什么方向？例如是否与 AI 视频/短视频制作相关，或者别的主题？"
+        }
+      ],
+      "structuredContent": {
+        "status": "ignored",
+        "question": "你希望 Feed 聚焦的长期关注是什么方向？例如是否与 AI 视频/短视频制作相关，或者别的主题？"
+      }
+    },
+    "hasContinuation": true
+  },
+  {
+    "case": "A02-3",
+    "input": "我的长期关注是：一个人怎样用 AI 完成有叙事、有表达的短视频。我重视能反复使用的制作方法、实际制作过程和失败经验。",
+    "response": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 结果：applied。\n暂时没有符合条件的 Personal Feed 内容。"
+        }
+      ],
+      "structuredContent": {
+        "status": "applied",
+        "appliedCount": 2,
+        "feed": {
+          "status": "business_empty"
+        }
+      }
+    },
+    "hasContinuation": false
+  }
+]

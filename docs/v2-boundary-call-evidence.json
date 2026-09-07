@@ -1,0 +1,259 @@
+[
+  {
+    "scenario": "A10-1",
+    "root": "/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-gw2VqU",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "暂时没有符合条件的 Personal Feed 内容。"
+        }
+      ],
+      "structuredContent": {
+        "status": "business_empty"
+      }
+    },
+    "recovery": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 已选出一条内容：https://x.com/fixture/status/202"
+        }
+      ],
+      "structuredContent": {
+        "status": "one_link",
+        "url": "https://x.com/fixture/status/202"
+      }
+    },
+    "evidence": "{\"operation\":\"context\",\"mode\":\"A10-1\",\"outcome\":\"success\"}\n{\"operation\":\"context\",\"mode\":\"recovered\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"recovered\",\"outcome\":\"qualified\"}\n{\"mode\": \"A10-1\", \"kind\": \"complete\", \"candidates\": 0}\n{\"mode\": \"recovered\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "restored": true,
+    "helperExited": true
+  },
+  {
+    "scenario": "A10-2",
+    "root": "/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-EXSvrk",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "暂时没有符合条件的 Personal Feed 内容。"
+        }
+      ],
+      "structuredContent": {
+        "status": "business_empty"
+      }
+    },
+    "evidence": "{\"operation\":\"context\",\"mode\":\"A10-2\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"A10-2\",\"outcome\":\"not_qualified\"}\n{\"mode\": \"A10-2\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "activation": "{\"label\": \"a10-2\", \"pid\": 3407981, \"stateDir\": \"/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-EXSvrk/state\", \"build\": \"/home/herman/.local/share/personal-feed-dev/builds/v2-rework-20260906T230143\", \"observerMatched\": true, \"dailyStateUnchanged\": true}\n",
+    "recovery": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 已选出一条内容：https://x.com/fixture/status/202"
+        }
+      ],
+      "structuredContent": {
+        "status": "one_link",
+        "url": "https://x.com/fixture/status/202"
+      }
+    },
+    "recoveryEvidence": "{\"operation\":\"context\",\"mode\":\"A10-2\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"A10-2\",\"outcome\":\"not_qualified\"}\n{\"operation\":\"context\",\"mode\":\"recovered\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"recovered\",\"outcome\":\"qualified\"}\n{\"mode\": \"A10-2\", \"kind\": \"complete\", \"candidates\": 1}\n{\"mode\": \"recovered\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "restored": true,
+    "helperExited": true
+  },
+  {
+    "scenario": "A11-1",
+    "root": "/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-jSoATV",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 获取来源失败，本次未完成。"
+        }
+      ],
+      "structuredContent": {
+        "status": "incomplete",
+        "stage": "source_window",
+        "reason": "observation_failed"
+      }
+    },
+    "evidence": "{\"operation\":\"context\",\"mode\":\"A11-1\",\"outcome\":\"success\"}\n{\"mode\": \"A11-1\", \"kind\": \"incomplete\", \"candidates\": 0}\n",
+    "activation": "{\"label\": \"a11-1\", \"pid\": 3408183, \"stateDir\": \"/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-jSoATV/state\", \"build\": \"/home/herman/.local/share/personal-feed-dev/builds/v2-rework-20260906T230143\", \"observerMatched\": true, \"dailyStateUnchanged\": true}\n",
+    "recovery": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 已选出一条内容：https://x.com/fixture/status/202"
+        }
+      ],
+      "structuredContent": {
+        "status": "one_link",
+        "url": "https://x.com/fixture/status/202"
+      }
+    },
+    "recoveryEvidence": "{\"operation\":\"context\",\"mode\":\"A11-1\",\"outcome\":\"success\"}\n{\"operation\":\"context\",\"mode\":\"recovered\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"recovered\",\"outcome\":\"qualified\"}\n{\"mode\": \"A11-1\", \"kind\": \"incomplete\", \"candidates\": 0}\n{\"mode\": \"recovered\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "restored": true,
+    "helperExited": true
+  },
+  {
+    "scenario": "A11-2",
+    "root": "/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-dQDQfa",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 仅完成部分来源观察，本次未完成。"
+        }
+      ],
+      "structuredContent": {
+        "status": "incomplete",
+        "stage": "source_window",
+        "reason": "partial_observation"
+      }
+    },
+    "evidence": "{\"operation\":\"context\",\"mode\":\"A11-2\",\"outcome\":\"success\"}\n{\"mode\": \"A11-2\", \"kind\": \"incomplete\", \"candidates\": 1, \"snapshotFailedAfterMaterial\": true}\n",
+    "activation": "{\"label\": \"a11-2\", \"pid\": 3408343, \"stateDir\": \"/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-dQDQfa/state\", \"build\": \"/home/herman/.local/share/personal-feed-dev/builds/v2-rework-20260906T230143\", \"observerMatched\": true, \"dailyStateUnchanged\": true}\n",
+    "recovery": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 已选出一条内容：https://x.com/fixture/status/202"
+        }
+      ],
+      "structuredContent": {
+        "status": "one_link",
+        "url": "https://x.com/fixture/status/202"
+      }
+    },
+    "recoveryEvidence": "{\"operation\":\"context\",\"mode\":\"A11-2\",\"outcome\":\"success\"}\n{\"operation\":\"context\",\"mode\":\"recovered\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"recovered\",\"outcome\":\"qualified\"}\n{\"mode\": \"A11-2\", \"kind\": \"incomplete\", \"candidates\": 1, \"snapshotFailedAfterMaterial\": true}\n{\"mode\": \"recovered\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "restored": true,
+    "helperExited": true
+  },
+  {
+    "scenario": "A11-3",
+    "root": "/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-7Isnga",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 来源正文不足，无法完成判断。"
+        }
+      ],
+      "structuredContent": {
+        "status": "incomplete",
+        "stage": "source_window",
+        "reason": "material_insufficient"
+      }
+    },
+    "evidence": "{\"operation\":\"context\",\"mode\":\"A11-3\",\"outcome\":\"success\"}\n{\"mode\": \"A11-3\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "activation": "{\"label\": \"a11-3\", \"pid\": 3408580, \"stateDir\": \"/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-7Isnga/state\", \"build\": \"/home/herman/.local/share/personal-feed-dev/builds/v2-rework-20260906T230143\", \"observerMatched\": true, \"dailyStateUnchanged\": true}\n",
+    "recovery": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 已选出一条内容：https://x.com/fixture/status/202"
+        }
+      ],
+      "structuredContent": {
+        "status": "one_link",
+        "url": "https://x.com/fixture/status/202"
+      }
+    },
+    "recoveryEvidence": "{\"operation\":\"context\",\"mode\":\"A11-3\",\"outcome\":\"success\"}\n{\"operation\":\"context\",\"mode\":\"recovered\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"recovered\",\"outcome\":\"qualified\"}\n{\"mode\": \"A11-3\", \"kind\": \"complete\", \"candidates\": 1}\n{\"mode\": \"recovered\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "restored": true,
+    "helperExited": true
+  },
+  {
+    "scenario": "A11-4",
+    "root": "/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-6U8F8X",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 在 judgement_execution 阶段未完成。"
+        }
+      ],
+      "structuredContent": {
+        "status": "incomplete",
+        "stage": "judgement_execution"
+      }
+    },
+    "evidence": "{\"operation\":\"context\",\"mode\":\"A11-4\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"A11-4\",\"outcome\":\"http_503\"}\n{\"mode\": \"A11-4\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "activation": "{\"label\": \"a11-4\", \"pid\": 3409016, \"stateDir\": \"/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-6U8F8X/state\", \"build\": \"/home/herman/.local/share/personal-feed-dev/builds/v2-rework-20260906T230143\", \"observerMatched\": true, \"dailyStateUnchanged\": true}\n",
+    "recovery": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 已选出一条内容：https://x.com/fixture/status/202"
+        }
+      ],
+      "structuredContent": {
+        "status": "one_link",
+        "url": "https://x.com/fixture/status/202"
+      }
+    },
+    "recoveryEvidence": "{\"operation\":\"context\",\"mode\":\"A11-4\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"A11-4\",\"outcome\":\"http_503\"}\n{\"operation\":\"context\",\"mode\":\"recovered\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"recovered\",\"outcome\":\"qualified\"}\n{\"mode\": \"A11-4\", \"kind\": \"complete\", \"candidates\": 1}\n{\"mode\": \"recovered\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "restored": true,
+    "helperExited": true
+  },
+  {
+    "scenario": "A11-5",
+    "root": "/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-w5CU8J",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 本次调用未完成。"
+        }
+      ],
+      "isError": true
+    },
+    "evidence": "{\"operation\":\"context\",\"mode\":\"A11-5\",\"outcome\":\"success\"}\n{\"mode\": \"A11-5\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "activation": "{\"label\": \"a11-5\", \"pid\": 3409244, \"stateDir\": \"/home/herman/.local/state/personal-feed-acceptance/controlled/personal-feed-v2-boundary-w5CU8J/state\", \"build\": \"/home/herman/.local/share/personal-feed-dev/builds/v2-rework-20260906T230143\", \"observerMatched\": true, \"dailyStateUnchanged\": true}\n",
+    "recovery": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 已选出一条内容：https://x.com/fixture/status/202"
+        }
+      ],
+      "structuredContent": {
+        "status": "one_link",
+        "url": "https://x.com/fixture/status/202"
+      }
+    },
+    "recoveryEvidence": "{\"operation\":\"context\",\"mode\":\"A11-5\",\"outcome\":\"success\"}\n{\"operation\":\"context\",\"mode\":\"recovered\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"recovered\",\"outcome\":\"qualified\"}\n{\"mode\": \"A11-5\", \"kind\": \"complete\", \"candidates\": 1}\n{\"mode\": \"recovered\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "restored": true,
+    "helperExited": true
+  },
+  {
+    "scenario": "A11-4-readable",
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 对内容是否符合条件的判断未完成。"
+        }
+      ],
+      "structuredContent": {
+        "status": "incomplete",
+        "stage": "judgement_execution"
+      }
+    },
+    "recovery": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Personal Feed 已选出一条内容：https://x.com/fixture/status/202"
+        }
+      ],
+      "structuredContent": {
+        "status": "one_link",
+        "url": "https://x.com/fixture/status/202"
+      }
+    },
+    "evidence": "{\"operation\":\"context\",\"mode\":\"A11-4\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"A11-4\",\"outcome\":\"http_503\"}\n{\"operation\":\"context\",\"mode\":\"recovered\",\"outcome\":\"success\"}\n{\"operation\":\"judge\",\"mode\":\"recovered\",\"outcome\":\"qualified\"}\n{\"mode\": \"A11-4\", \"kind\": \"complete\", \"candidates\": 1}\n{\"mode\": \"recovered\", \"kind\": \"complete\", \"candidates\": 1}\n",
+    "restored": true,
+    "helperExited": true
+  }
+]

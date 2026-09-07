@@ -86,11 +86,13 @@ async function fixture(options: {
 describe('one complete Feed selection', () => {
   it('blocks unrelated knowledge before even an empty source can hide insufficient context', async () => {
     const f = await fixture({
-      facts: [interest, unrelated], context: { status: 'ignored', sufficient: false },
+      facts: [interest, unrelated], context: { status: 'ignored', sufficient: false,
+        remaining: { question: 'What do you know about family care?', unresolvedScope: 'family-care knowledge' } },
       source: async () => ({ status: 'complete', candidates: [] }),
     })
     await expect(f.app.request({ currentText: 'Give me a family-care Feed.' }))
-      .resolves.toEqual({ status: 'incomplete', stage: 'personal_context' })
+      .resolves.toEqual({ status: 'incomplete', stage: 'personal_context',
+        question: 'What do you know about family care?', continuationToken: expect.any(String) })
     expect(f.sourceCalls()).toBe(0)
     expect(f.judgmentInputs).toEqual([])
     expect(await f.records()).toEqual([])
@@ -113,9 +115,11 @@ describe('one complete Feed selection', () => {
   it('commits an explicit update even when it still cannot support this Feed', async () => {
     const f = await fixture({ facts: [interest], context: {
       status: 'applied', changes: { additions: [unrelated], replacements: [] }, sufficient: false,
+      remaining: { question: 'What do you know about family care?', unresolvedScope: 'family-care knowledge' },
     } })
     await expect(f.app.request({ currentText: 'I know compilers; give me a family-care Feed.' }))
-      .resolves.toEqual({ status: 'incomplete', stage: 'personal_context' })
+      .resolves.toEqual({ status: 'incomplete', stage: 'personal_context',
+        question: 'What do you know about family care?', continuationToken: expect.any(String) })
     expect(await f.facts()).toEqual([interest, unrelated])
     expect(f.sourceCalls()).toBe(0)
     expect(await f.records()).toEqual([])
@@ -182,7 +186,7 @@ describe('one complete Feed selection', () => {
     { ...candidate(), stableId: 'x-status:2' },
   ])('reports invalid source material as incomplete rather than a storage fault: %j', async invalid => {
     const f = await fixture({ source: async () => ({ status: 'complete', candidates: [invalid] }) })
-    await expect(f.app.request({ currentText: 'Feed' })).resolves.toEqual({ status: 'incomplete', stage: 'source_window' })
+    await expect(f.app.request({ currentText: 'Feed' })).resolves.toEqual({ status: 'incomplete', stage: 'source_window', reason: 'material_insufficient' })
     expect(f.judgmentInputs).toEqual([])
     expect(await f.records()).toEqual([])
   })

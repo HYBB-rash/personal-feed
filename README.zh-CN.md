@@ -45,6 +45,8 @@ export PERSONAL_FEED_MODEL_API_KEY='<独立模型 key>'
 export PERSONAL_FEED_MODEL_TIMEOUT_MS='30000' # 可选
 ```
 
+可选 `PERSONAL_FEED_MODEL_RESPONSE_FORMAT=strict_tool` 要求模型端点支持严格 Function JSON Schema；默认 `json_content` 保持原来的 JSON 文本接入。严格模式要求唯一的固定返回函数，仅取其数据并继续原有校验；不执行模型工具、不自动重试或退回自由文本，不更改模型的思考设置。安装器会保留这个显式选择。DeepSeek 的严格模式当前使用 [Beta 端点](https://api-docs.deepseek.com/guides/tool_calls/#strict-mode-beta)，应显式把 base URL 配为 `https://api.deepseek.com/beta`；服务不自动改写供应商地址。结构正确不代表语义判断一定正确。
+
 在干净且明确的 Git commit 上先检查：
 
 ```sh
@@ -84,4 +86,4 @@ nix run . -- service rollback --apply '<backup-directory>'
 
 ## 日志
 
-服务日志只包含操作名、服务生成的匿名请求 ID、结果类别和耗时，不包含用户原文、X 正文、完整 URL、continuation token 或凭据。
+工具调用日志包含操作名、服务生成的匿名请求 ID、结果类别和耗时。模型调用失败另记 `model_failure`，只记录固定错误分类、可选的固定结构位置及必要的 HTTP 状态码。应用校验用 `application_failure` 区分变更无效、缺少追问、充分性无效、冲突、取消及关联失效。日志不包含用户原文、模型返回正文、X 正文、完整 URL、continuation token 或凭据。诊断不改变工具结果，也不触发重试。

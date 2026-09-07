@@ -151,7 +151,7 @@ describe('explicit personal-context changes', () => {
     const uncertain = { ...broad, epistemic: 'uncertain' } as const
     f.change({ additions: [], replacements: [{ target: broad, replacement: [uncertain] }] })
     await expect(f.app.request({ currentText: 'I doubt that claim; give me a Feed.' }))
-      .resolves.toEqual({ status: 'incomplete', stage: 'personal_context' })
+      .resolves.toEqual({ status: 'incomplete', stage: 'personal_context', question: expect.any(String), continuationToken: expect.any(String) })
     expect((await f.read()).facts).toEqual([interest, uncertain])
     expect(f.observe).not.toHaveBeenCalled()
     expect(f.judgeCandidate).not.toHaveBeenCalled()

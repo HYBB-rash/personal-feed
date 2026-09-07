@@ -17,6 +17,9 @@ export function parseServiceEnvironment(environment: NodeJS.ProcessEnv): Persona
     model: required(environment, 'PERSONAL_FEED_MODEL'),
     apiKey: required(environment, 'PERSONAL_FEED_MODEL_API_KEY'),
     timeoutMs: integer(environment.PERSONAL_FEED_MODEL_TIMEOUT_MS ?? '30000', 'PERSONAL_FEED_MODEL_TIMEOUT_MS', 1, 300_000),
+    ...(environment.PERSONAL_FEED_MODEL_RESPONSE_FORMAT === undefined ? {} : {
+      responseFormat: environment.PERSONAL_FEED_MODEL_RESPONSE_FORMAT.trim(),
+    }),
   })
   const mcpToken = required(environment, 'PERSONAL_FEED_MCP_TOKEN')
   if (!/^[A-Za-z0-9._~-]{16,512}$/.test(mcpToken)) throw new Error('MCP token must be 16-512 URL-safe characters')
@@ -39,8 +42,10 @@ export async function serveFromEnvironment(environment: NodeJS.ProcessEnv = proc
   const config = parseServiceEnvironment(environment)
   await mkdir(config.stateDir, { recursive: true, mode: 0o700 })
   const observer = createPythonXObserver({ observerCliPath: config.observerCliPath, stateDir: config.stateDir })
-  const model = createOpenAICompatiblePersonalFeedModel(config.model)
-  const application = createPersonalFeedApplication({ stateDir: config.stateDir, model, observer })
+  const model = createOpenAICompatiblePersonalFeedModel(config.model,
+    event => process.stderr.write(`${JSON.stringify(event)}\n`))
+  const application = createPersonalFeedApplication({ stateDir: config.stateDir, model, observer,
+    onFailure: event => process.stderr.write(`${JSON.stringify(event)}\n`) })
   const running = await startPersonalFeedServer({
     application,
     config,

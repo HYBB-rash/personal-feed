@@ -51,6 +51,10 @@ function installMode(flags: readonly string[]): 'check' | 'apply' {
 function serviceOptions(dependencies: CliDependencies, mode: 'check' | 'apply'): ServiceInstallOptions {
   const env = dependencies.environment
   const homes = resolveHomes(env)
+  const responseFormat = env.PERSONAL_FEED_MODEL_RESPONSE_FORMAT?.trim()
+  if (responseFormat !== undefined && responseFormat !== 'json_content' && responseFormat !== 'strict_tool') {
+    throw new Error('PERSONAL_FEED_MODEL_RESPONSE_FORMAT must be json_content or strict_tool')
+  }
   return {
     mode,
     repoRoot: dependencies.cwd(),
@@ -62,6 +66,7 @@ function serviceOptions(dependencies: CliDependencies, mode: 'check' | 'apply'):
       model: required(env, 'PERSONAL_FEED_MODEL'),
       apiKey: required(env, 'PERSONAL_FEED_MODEL_API_KEY'),
       timeoutMs: positiveInteger(env.PERSONAL_FEED_MODEL_TIMEOUT_MS ?? '30000', 'PERSONAL_FEED_MODEL_TIMEOUT_MS'),
+      ...(responseFormat === undefined ? {} : { responseFormat }),
     },
   }
 }

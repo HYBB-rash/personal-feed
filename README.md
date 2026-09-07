@@ -45,6 +45,8 @@ export PERSONAL_FEED_MODEL_API_KEY='<separate-model-key>'
 export PERSONAL_FEED_MODEL_TIMEOUT_MS='30000' # optional
 ```
 
+Optional `PERSONAL_FEED_MODEL_RESPONSE_FORMAT=strict_tool` requires an endpoint supporting strict Function JSON Schema. The default `json_content` preserves the existing JSON-text interface. Strict mode accepts one fixed result function as data and retains all existing validation; it does not execute model tools, retry, fall back to free text, or change thinking settings. The installer preserves this explicit choice. DeepSeek currently requires its [Beta endpoint](https://api-docs.deepseek.com/guides/tool_calls/#strict-mode-beta), so explicitly configure `https://api.deepseek.com/beta` as the base URL. The service never rewrites provider addresses. Schema conformance does not establish semantic correctness.
+
 Review the exact plan from a clean commit:
 
 ```sh
@@ -84,4 +86,4 @@ Service rollback restores the unit and configuration and preserves the independe
 
 ## Logs and data
 
-Service logs contain only an operation name, a server-generated anonymous request ID, a result category, and duration. They do not contain user messages, X text, full URLs, continuation tokens, or credentials. JSONL writes are synced before success is returned; snapshots use same-directory temporary files and atomic replacement.
+Tool logs contain an operation name, a server-generated anonymous request ID, a result category, and duration. Model failures emit `model_failure` with fixed failure categories, optional fixed schema locations, and an HTTP status when relevant. Application validation emits `application_failure` for invalid changes, missing clarification, failed assessment, conflicts, cancellation, or unusable associations. Logs exclude user messages, model response text, X text, full URLs, continuation tokens, and credentials. Diagnostics neither change tool results nor trigger retries. JSONL writes are synced before success is returned; snapshots use same-directory temporary files and atomic replacement.
